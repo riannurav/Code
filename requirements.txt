@@ -1,0 +1,6 @@
+streamlit
+opencv-python
+numpy
+mediapipe
+fpdf2 # Note: fpdf is an older library, fpdf2 is the maintained version
+Pillow
