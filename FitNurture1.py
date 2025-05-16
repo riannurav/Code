@@ -205,7 +205,7 @@ if input_mode == "Upload Image":
     if uploaded_file:
         image = Image.open(uploaded_file)
 
-elif input_mode == "Use Webcam":
+elif input_mode == "Use Camera (Recommended for Mobile)":
     frame_placeholder = st.empty()
 
     if not st.session_state.is_capturing and not st.session_state.capture_triggered:

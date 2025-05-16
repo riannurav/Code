@@ -108,7 +108,8 @@ st.set_page_config(page_title="FitNurture : Posture Detection")
 st.title("FitNurture : Posture Detection")
 
 child_name = st.text_input("Enter the Child's Name")
-input_mode = st.radio("Choose Input Mode", ["Upload Image", "Use Webcam"])
+st.markdown("""**Note:** If you're using a mobile device, the camera input is more reliable than file uploads.""")
+input_mode = st.radio("Choose Input Mode", ["Upload Image", "Use Camera (Recommended for Mobile)"])
 
 image = None
 
@@ -117,7 +118,7 @@ if input_mode == "Upload Image":
     if uploaded_file:
         image = Image.open(uploaded_file)
 
-elif input_mode == "Use Webcam":
+elif input_mode == "Use Camera (Recommended for Mobile)":
     st.info("Use the button below to take a snapshot from your webcam.")
     img_data = st.camera_input("Take a picture using webcam")
 
