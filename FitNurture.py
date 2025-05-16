@@ -27,34 +27,82 @@ st.markdown("""
         .main > div {
             padding: 0rem 1rem 1rem 1rem;
         }
+        /* Center logo container */
+        .logo-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            width: 100%;
+            margin: 0 auto;
+            padding: 1rem 0;
+        }
+        /* Ensure image is centered */
+        .logo-container > div {
+            display: flex !important;
+            justify-content: center !important;
+            width: 100% !important;
+        }
+        .logo-container img {
+            max-width: 200px !important;
+            margin: 0 auto !important;
+        }
+        /* Center title text */
+        .title-text {
+            text-align: center;
+            font-size: 24px;
+            width: 100%;
+            margin: 1rem 0;
+        }
+        /* Responsive adjustments */
+        @media (max-width: 768px) {
+            .logo-container {
+                padding: 0 10px;
+            }
+        }
+        /* Copyright footer styling */
+        .copyright-footer {
+            text-align: center;
+            padding: 20px 0;
+            margin-top: 30px;
+            border-top: 1px solid #e5e5e5;
+            color: #666;
+            font-size: 14px;
+        }
+        .copyright-footer a {
+            color: #666;
+            text-decoration: none;
+        }
+        .copyright-footer a:hover {
+            text-decoration: underline;
+        }
     </style>
 """, unsafe_allow_html=True)
 
 # --- Logo and Title Section ---
-col1, col2, col3 = st.columns([2,1,2])
-with col2:
-    # Check for logo in different possible formats
-    logo_paths = [
-        os.path.join("assets", "logo.jpg"),
-        os.path.join("assets", "logo.JPG"),
-        os.path.join("assets", "logo.png"),
-        os.path.join("assets", "logo.PNG")
-    ]
-    
-    logo_found = False
-    for logo_path in logo_paths:
-        if os.path.exists(logo_path):
-            try:
-                st.image(logo_path, width=200)
-                logo_found = True
-                break
-            except Exception as e:
-                continue
-    
-    if not logo_found:
-        st.warning("Logo not found. Please ensure the logo file is in the assets directory.")
-    
-    st.markdown("<h1 style='text-align: center; font-size: 24px;'>FitNurture : Posture Detection</h1>", unsafe_allow_html=True)
+st.markdown('<div class="logo-container">', unsafe_allow_html=True)
+# Check for logo in different possible formats
+logo_paths = [
+    os.path.join("assets", "logo.jpg"),
+    os.path.join("assets", "logo.JPG"),
+    os.path.join("assets", "logo.png"),
+    os.path.join("assets", "logo.PNG")
+]
+
+logo_found = False
+for logo_path in logo_paths:
+    if os.path.exists(logo_path):
+        try:
+            st.image(logo_path, width=200, use_container_width=False)
+            logo_found = True
+            break
+        except Exception as e:
+            continue
+
+if not logo_found:
+    st.warning("Logo not found. Please ensure the logo file is in the assets directory.")
+
+st.markdown('</div>', unsafe_allow_html=True)
+st.markdown('<div class="title-text">FitNurture : Posture Detection</div>', unsafe_allow_html=True)
 
 # --- Function Definitions ---
 def calculate_angle(a, b, c):
@@ -226,3 +274,10 @@ if st.session_state.records:
     st.download_button("📥 Download CSV", data=csv, file_name="posture_records.csv", mime="text/csv")
 else:
     st.info("No records to display yet.")
+
+# Add copyright footer
+st.markdown("""
+    <div class="copyright-footer">
+        © Copyright 2025 FutureNurture | <a href="http://www.futurenurture.in" target="_blank">www.futurenurture.in</a>
+    </div>
+""", unsafe_allow_html=True)
