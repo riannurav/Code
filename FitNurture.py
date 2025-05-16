@@ -27,37 +27,12 @@ st.markdown("""
         .main > div {
             padding: 0rem 1rem 1rem 1rem;
         }
-        /* Center logo container */
-        .logo-container {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            width: 100%;
-            margin: 0 auto;
-            padding: 1rem 0;
-        }
-        /* Ensure image is centered */
-        .logo-container > div {
-            display: flex !important;
-            justify-content: center !important;
-            width: 100% !important;
-        }
-        .logo-container img {
-            max-width: 200px !important;
-            margin: 0 auto !important;
-        }
         /* Center title text */
         .title-text {
             text-align: center;
             font-size: 24px;
             width: 100%;
             margin: 1rem 0;
-        }
-        /* Responsive adjustments */
-        @media (max-width: 768px) {
-            .logo-container {
-                padding: 0 10px;
-            }
         }
         /* Copyright footer styling */
         .copyright-footer {
@@ -75,33 +50,54 @@ st.markdown("""
         .copyright-footer a:hover {
             text-decoration: underline;
         }
+        /* Super precise centering for logo */
+        div[data-testid="stImage"] {
+            display: flex !important;
+            justify-content: center !important;
+            align-items: center !important;
+        }
+        div[data-testid="stImage"] > img {
+            display: block !important;
+            margin: 0 auto !important;
+        }
+        [data-testid="column"] {
+            width: 100% !important;
+            flex: 1 1 calc(33.33% - 1rem) !important;
+            text-align: center !important;
+        }
+        [data-testid="column"]:first-child {
+            flex: 1 1 calc(33.33% - 1rem) !important;
+        }
+        [data-testid="column"]:last-child {
+            flex: 1 1 calc(33.33% - 1rem) !important;
+        }
     </style>
 """, unsafe_allow_html=True)
 
 # --- Logo and Title Section ---
-st.markdown('<div class="logo-container">', unsafe_allow_html=True)
-# Check for logo in different possible formats
-logo_paths = [
-    os.path.join("assets", "logo.jpg"),
-    os.path.join("assets", "logo.JPG"),
-    os.path.join("assets", "logo.png"),
-    os.path.join("assets", "logo.PNG")
-]
+_, col2, _ = st.columns(3)
+with col2:
+    # Check for logo in different possible formats
+    logo_paths = [
+        os.path.join("assets", "logo.jpg"),
+        os.path.join("assets", "logo.JPG"),
+        os.path.join("assets", "logo.png"),
+        os.path.join("assets", "logo.PNG")
+    ]
+    
+    logo_found = False
+    for logo_path in logo_paths:
+        if os.path.exists(logo_path):
+            try:
+                st.image(logo_path, width=150)
+                logo_found = True
+                break
+            except Exception as e:
+                continue
+    
+    if not logo_found:
+        st.warning("Logo not found. Please ensure the logo file is in the assets directory.")
 
-logo_found = False
-for logo_path in logo_paths:
-    if os.path.exists(logo_path):
-        try:
-            st.image(logo_path, width=200, use_container_width=False)
-            logo_found = True
-            break
-        except Exception as e:
-            continue
-
-if not logo_found:
-    st.warning("Logo not found. Please ensure the logo file is in the assets directory.")
-
-st.markdown('</div>', unsafe_allow_html=True)
 st.markdown('<div class="title-text">FitNurture : Posture Detection</div>', unsafe_allow_html=True)
 
 # --- Function Definitions ---
