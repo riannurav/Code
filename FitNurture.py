@@ -10,6 +10,35 @@ import random
 import pandas as pd
 from datetime import datetime
 
+# --- Page Config ---
+st.set_page_config(
+    page_title="FitNurture : Posture Detection",
+    page_icon="🧘‍♀️",
+    layout="wide"
+)
+
+# --- Custom CSS ---
+st.markdown("""
+    <style>
+        .block-container {
+            padding-top: 1rem;
+            padding-bottom: 0rem;
+        }
+        .main > div {
+            padding: 0rem 1rem 1rem 1rem;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- Logo and Title Section ---
+col1, col2, col3 = st.columns([2,1,2])
+with col2:
+    # Check if logo exists, otherwise display text
+    logo_path = "assets/logo.jpg"
+    if os.path.exists(logo_path):
+        st.image(logo_path, width=200)
+    st.markdown("<h1 style='text-align: center; font-size: 24px;'>FitNurture : Posture Detection</h1>", unsafe_allow_html=True)
+
 # --- Function Definitions ---
 def calculate_angle(a, b, c):
     a = np.array(a)
@@ -26,9 +55,6 @@ def calculate_angle(a, b, c):
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 pose_static = mp_pose.Pose(static_image_mode=True, min_detection_confidence=0.5, min_tracking_confidence=0.5)
-
-st.set_page_config(page_title="FitNurture : Posture Detection")
-st.title("FitNurture : Posture Detection")
 
 if "records" not in st.session_state:
     st.session_state.records = []
