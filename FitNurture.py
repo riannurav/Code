@@ -33,10 +33,27 @@ st.markdown("""
 # --- Logo and Title Section ---
 col1, col2, col3 = st.columns([2,1,2])
 with col2:
-    # Check if logo exists, otherwise display text
-    logo_path = "assets/logo.jpg"
-    if os.path.exists(logo_path):
-        st.image(logo_path, width=200)
+    # Check for logo in different possible formats
+    logo_paths = [
+        os.path.join("assets", "logo.jpg"),
+        os.path.join("assets", "logo.JPG"),
+        os.path.join("assets", "logo.png"),
+        os.path.join("assets", "logo.PNG")
+    ]
+    
+    logo_found = False
+    for logo_path in logo_paths:
+        if os.path.exists(logo_path):
+            try:
+                st.image(logo_path, width=200)
+                logo_found = True
+                break
+            except Exception as e:
+                continue
+    
+    if not logo_found:
+        st.warning("Logo not found. Please ensure the logo file is in the assets directory.")
+    
     st.markdown("<h1 style='text-align: center; font-size: 24px;'>FitNurture : Posture Detection</h1>", unsafe_allow_html=True)
 
 # --- Function Definitions ---
