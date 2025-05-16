@@ -17,24 +17,9 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- Custom CSS ---
+# --- Custom CSS for Copyright Only ---
 st.markdown("""
     <style>
-        .block-container {
-            padding-top: 1rem;
-            padding-bottom: 0rem;
-        }
-        .main > div {
-            padding: 0rem 1rem 1rem 1rem;
-        }
-        /* Center title text */
-        .title-text {
-            text-align: center;
-            font-size: 24px;
-            width: 100%;
-            margin: 1rem 0;
-        }
-        /* Copyright footer styling */
         .copyright-footer {
             text-align: center;
             padding: 20px 0;
@@ -50,32 +35,15 @@ st.markdown("""
         .copyright-footer a:hover {
             text-decoration: underline;
         }
-        /* Super precise centering for logo */
-        div[data-testid="stImage"] {
-            display: flex !important;
-            justify-content: center !important;
-            align-items: center !important;
-        }
-        div[data-testid="stImage"] > img {
-            display: block !important;
-            margin: 0 auto !important;
-        }
-        [data-testid="column"] {
-            width: 100% !important;
-            flex: 1 1 calc(33.33% - 1rem) !important;
-            text-align: center !important;
-        }
-        [data-testid="column"]:first-child {
-            flex: 1 1 calc(33.33% - 1rem) !important;
-        }
-        [data-testid="column"]:last-child {
-            flex: 1 1 calc(33.33% - 1rem) !important;
-        }
     </style>
 """, unsafe_allow_html=True)
 
 # --- Logo and Title Section ---
-_, col2, _ = st.columns(3)
+# Title centered at the top
+st.markdown("<h2 style='text-align: center; font-size: 24px; margin-bottom: 20px;'>FitNurture : Posture Detection</h2>", unsafe_allow_html=True)
+
+# Center the logo using columns
+col1, col2, col3 = st.columns([1.2, 1, 1.2])
 with col2:
     # Check for logo in different possible formats
     logo_paths = [
@@ -89,7 +57,7 @@ with col2:
     for logo_path in logo_paths:
         if os.path.exists(logo_path):
             try:
-                st.image(logo_path, width=150)
+                st.image(logo_path, width=225, use_container_width=True)
                 logo_found = True
                 break
             except Exception as e:
@@ -98,7 +66,8 @@ with col2:
     if not logo_found:
         st.warning("Logo not found. Please ensure the logo file is in the assets directory.")
 
-st.markdown('<div class="title-text">FitNurture : Posture Detection</div>', unsafe_allow_html=True)
+# Add some spacing after the logo
+st.markdown("<br>", unsafe_allow_html=True)
 
 # --- Function Definitions ---
 def calculate_angle(a, b, c):
@@ -127,29 +96,33 @@ if "abnormalities" not in st.session_state:
     st.session_state.abnormalities = {}
 
 # --- Input Form and Image Processing ---
-child_name = st.text_input("Enter the Child's Name")
-st.markdown("**Note:** If you're using a mobile device, the camera input is more reliable than file uploads.")
-input_mode = st.radio("Choose Input Mode", ["Upload Image", "Use Camera (Recommended for Mobile)"])
+container = st.container()
+with container:
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        child_name = st.text_input("Enter the Child's Name")
+        st.markdown("**Note:** If you're using a mobile device, the camera input is more reliable than file uploads.")
+        input_mode = st.radio("Choose Input Mode", ["Upload Image", "Use Camera (Recommended for Mobile)"])
 
-image_data = None
+        image_data = None
 
-# Clear the other input type when switching modes
-if input_mode == "Upload Image":
-    if "camera" in st.session_state:
-        del st.session_state["camera"]
-    uploaded_file = st.file_uploader("Upload an image", type=["jpg", "png", "jpeg"])
-    if uploaded_file:
-        image_data = Image.open(uploaded_file)
-else:  # Camera mode
-    if "upload" in st.session_state:
-        del st.session_state["upload"]
-    camera_data = st.camera_input("Take a picture using device")
-    if camera_data:
-        file_bytes = np.asarray(bytearray(camera_data.read()), dtype=np.uint8)
-        frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        if frame is not None:
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            image_data = Image.fromarray(frame_rgb)
+        # Clear the other input type when switching modes
+        if input_mode == "Upload Image":
+            if "camera" in st.session_state:
+                del st.session_state["camera"]
+            uploaded_file = st.file_uploader("Upload an image", type=["jpg", "png", "jpeg"])
+            if uploaded_file:
+                image_data = Image.open(uploaded_file)
+        else:  # Camera mode
+            if "upload" in st.session_state:
+                del st.session_state["upload"]
+            camera_data = st.camera_input("Take a picture using device")
+            if camera_data:
+                file_bytes = np.asarray(bytearray(camera_data.read()), dtype=np.uint8)
+                frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+                if frame is not None:
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    image_data = Image.fromarray(frame_rgb)
 
 # Process image if available and name is provided
 if image_data and child_name:
@@ -159,8 +132,28 @@ if image_data and child_name:
     elif len(img_np.shape) == 2:
         img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2RGB)
 
+    # Create a placeholder for messages
+    message_placeholder = st.empty()
+    
     results = pose_static.process(img_np)
-    if results.pose_landmarks:
+    
+    # Check if pose detection was successful
+    if not results.pose_landmarks:
+        message_placeholder.error("⚠️ No person detected in the image. Please ensure that:")
+        st.markdown("""
+        - The full body is visible in the image
+        - The person is standing straight
+        - The lighting is adequate
+        - The image is clear and not blurry
+        """)
+        # Clear any previous results
+        st.session_state.current_entry = {}
+        st.session_state.landmark_image = None
+        st.session_state.abnormalities = {}
+    else:
+        # Clear any previous error message
+        message_placeholder.empty()
+        
         lm = results.pose_landmarks.landmark
         img_with_landmarks = img_np.copy()
         mp_drawing.draw_landmarks(
@@ -169,30 +162,99 @@ if image_data and child_name:
             mp_drawing.DrawingSpec(color=(255, 0, 0), thickness=2, circle_radius=2))
         st.session_state.landmark_image = img_with_landmarks
 
+        def is_landmark_visible(landmark):
+            return (0.01 < landmark.x < 0.99 and 
+                   0.01 < landmark.y < 0.99 and 
+                   landmark.visibility > 0.5)
+
+        # Calculate neck angle using ear, nose, and shoulder points for better accuracy
+        neck_angle = calculate_angle(
+            [lm[mp_pose.PoseLandmark.RIGHT_EAR.value].x, lm[mp_pose.PoseLandmark.RIGHT_EAR.value].y],
+            [lm[mp_pose.PoseLandmark.NOSE.value].x, lm[mp_pose.PoseLandmark.NOSE.value].y],
+            [lm[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].x, lm[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].y]
+        )
+
+        # Calculate forward head position
+        ear_shoulder_distance = abs(lm[mp_pose.PoseLandmark.RIGHT_EAR.value].x - lm[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].x)
+
+        # Initialize metrics with None values
         metrics = {
-            "shoulder_z": lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].z,
-            "hip_z": lm[mp_pose.PoseLandmark.LEFT_HIP.value].z,
-            "knee_z": lm[mp_pose.PoseLandmark.LEFT_KNEE.value].z,
-            "tech_neck_angle": calculate_angle(
-                [lm[mp_pose.PoseLandmark.LEFT_HIP.value].x, lm[mp_pose.PoseLandmark.LEFT_HIP.value].y],
-                [lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x, lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y],
-                [lm[mp_pose.PoseLandmark.LEFT_EAR.value].x, lm[mp_pose.PoseLandmark.LEFT_EAR.value].y]),
-            "shoulder_y_diff": abs(lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y - lm[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].y),
-            "foot_z_diff": abs(lm[mp_pose.PoseLandmark.LEFT_HEEL.value].z - lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX.value].z),
-            "ankle_x_diff": abs(lm[mp_pose.PoseLandmark.LEFT_ANKLE.value].x - lm[mp_pose.PoseLandmark.RIGHT_ANKLE.value].x),
-            "knee_x_diff": abs(lm[mp_pose.PoseLandmark.LEFT_KNEE.value].x - lm[mp_pose.PoseLandmark.RIGHT_KNEE.value].x)
+            "shoulder_z": None,
+            "hip_z": None,
+            "knee_z": None,
+            "neck_angle": neck_angle,
+            "ear_shoulder_distance": ear_shoulder_distance,
+            "shoulder_y_diff": None,
+            "foot_z_diff": None,
+            "ankle_x_diff": None,
+            "knee_x_diff": None
         }
 
+        # Only calculate metrics if relevant landmarks are visible
+        if (is_landmark_visible(lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value]) and 
+            is_landmark_visible(lm[mp_pose.PoseLandmark.RIGHT_SHOULDER.value])):
+            metrics["shoulder_z"] = lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].z
+            metrics["shoulder_y_diff"] = abs(lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y - 
+                                          lm[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].y)
+
+        if is_landmark_visible(lm[mp_pose.PoseLandmark.LEFT_HIP.value]):
+            metrics["hip_z"] = lm[mp_pose.PoseLandmark.LEFT_HIP.value].z
+
+        if is_landmark_visible(lm[mp_pose.PoseLandmark.LEFT_KNEE.value]):
+            metrics["knee_z"] = lm[mp_pose.PoseLandmark.LEFT_KNEE.value].z
+
+        if (is_landmark_visible(lm[mp_pose.PoseLandmark.LEFT_HEEL.value]) and 
+            is_landmark_visible(lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX.value])):
+            metrics["foot_z_diff"] = abs(lm[mp_pose.PoseLandmark.LEFT_HEEL.value].z - 
+                                      lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX.value].z)
+
+        if (is_landmark_visible(lm[mp_pose.PoseLandmark.LEFT_ANKLE.value]) and 
+            is_landmark_visible(lm[mp_pose.PoseLandmark.RIGHT_ANKLE.value])):
+            metrics["ankle_x_diff"] = abs(lm[mp_pose.PoseLandmark.LEFT_ANKLE.value].x - 
+                                       lm[mp_pose.PoseLandmark.RIGHT_ANKLE.value].x)
+
+        if (is_landmark_visible(lm[mp_pose.PoseLandmark.LEFT_KNEE.value]) and 
+            is_landmark_visible(lm[mp_pose.PoseLandmark.RIGHT_KNEE.value])):
+            metrics["knee_x_diff"] = abs(lm[mp_pose.PoseLandmark.LEFT_KNEE.value].x - 
+                                      lm[mp_pose.PoseLandmark.RIGHT_KNEE.value].x)
+
+        # Initialize abnormalities
         abnormalities = {
-            "Kyphosis": metrics["shoulder_z"] - metrics["hip_z"] > 0.15,
-            "Lordosis": metrics["hip_z"] - metrics["knee_z"] > 0.1,
-            "Tech Neck": metrics["tech_neck_angle"] < 15,
-            "Scoliosis": metrics["shoulder_y_diff"] > 0.05,
-            "Flat Feet": metrics["foot_z_diff"] < 0.05,
-            "Gait Abnormalities": metrics["ankle_x_diff"] > 0.25,
-            "Knock Knees": metrics["knee_x_diff"] < metrics["ankle_x_diff"] * 0.7,
-            "Bow Legs": metrics["ankle_x_diff"] < metrics["knee_x_diff"] * 0.7
+            "Kyphosis": False,
+            "Lordosis": False,
+            "Tech Neck": False,
+            "Scoliosis": False,
+            "Flat Feet": False,
+            "Gait Abnormalities": False,
+            "Knock Knees": False,
+            "Bow Legs": False
         }
+
+        # Only assess conditions if relevant metrics are available
+        if metrics["shoulder_z"] is not None and metrics["hip_z"] is not None:
+            abnormalities["Kyphosis"] = metrics["shoulder_z"] - metrics["hip_z"] > 0.15
+
+        if metrics["hip_z"] is not None and metrics["knee_z"] is not None:
+            abnormalities["Lordosis"] = metrics["hip_z"] - metrics["knee_z"] > 0.1
+
+        # Adjusted tech neck thresholds:
+        # - Increased angle threshold from 40 to 45 degrees
+        # - Increased distance threshold from 0.1 to 0.15
+        # - Added combined condition requiring both angle and distance to be significant
+        abnormalities["Tech Neck"] = (neck_angle > 45 and ear_shoulder_distance > 0.15)
+
+        if metrics["shoulder_y_diff"] is not None:
+            abnormalities["Scoliosis"] = metrics["shoulder_y_diff"] > 0.05
+
+        if metrics["foot_z_diff"] is not None:
+            abnormalities["Flat Feet"] = metrics["foot_z_diff"] < 0.05
+
+        if metrics["ankle_x_diff"] is not None:
+            abnormalities["Gait Abnormalities"] = metrics["ankle_x_diff"] > 0.25
+
+        if metrics["knee_x_diff"] is not None and metrics["ankle_x_diff"] is not None:
+            abnormalities["Knock Knees"] = metrics["knee_x_diff"] < metrics["ankle_x_diff"] * 0.7
+            abnormalities["Bow Legs"] = metrics["ankle_x_diff"] < metrics["knee_x_diff"] * 0.7
 
         entry = {
             "Student Name": child_name,
@@ -205,10 +267,15 @@ if image_data and child_name:
         st.session_state.current_entry = entry
         st.session_state.abnormalities = abnormalities
 
+        # Add warning for partial visibility
+        visible_parts = [k for k, v in metrics.items() if v is not None]
+        if len(visible_parts) < len(metrics):
+            st.warning("⚠️ Some body parts are not fully visible in the image. Only partial posture analysis is possible.")
+
 # Add Save Button
-if st.session_state.get("current_entry"):
+if st.session_state.get("current_entry") and st.session_state.get("landmark_image") is not None:
     st.success("Analysis Complete")
-    st.image(st.session_state.landmark_image, caption="Landmarked Image", use_column_width=True)
+    st.image(st.session_state.landmark_image, caption="Landmarked Image", use_container_width=True)
     st.write(f"### Abnormality Detection for {st.session_state.current_entry['Student Name']}:")
     for condition, present in st.session_state.abnormalities.items():
         st.markdown(f"- {condition}: {'Yes' if present else 'No'}")
