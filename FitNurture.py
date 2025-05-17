@@ -9,6 +9,33 @@ import os
 import random
 import pandas as pd
 from datetime import datetime
+import gc  # Import garbage collector
+
+# --- Memory Management Functions ---
+def clear_image_memory():
+    """Clear image-related data from session state"""
+    if 'landmark_image' in st.session_state:
+        del st.session_state['landmark_image']
+    if 'current_entry' in st.session_state:
+        del st.session_state['current_entry']
+    if 'abnormalities' in st.session_state:
+        del st.session_state['abnormalities']
+    gc.collect()  # Force garbage collection
+
+def optimize_image(image, max_size=800):
+    """Resize image while maintaining aspect ratio"""
+    if isinstance(image, np.ndarray):
+        img = Image.fromarray(image)
+    else:
+        img = image
+    
+    # Calculate new size maintaining aspect ratio
+    ratio = max_size / max(img.size)
+    if ratio < 1:  # Only resize if image is larger than max_size
+        new_size = tuple(int(dim * ratio) for dim in img.size)
+        img = img.resize(new_size, Image.LANCZOS)
+    
+    return img
 
 # --- Page Config ---
 st.set_page_config(
@@ -82,18 +109,24 @@ def calculate_angle(a, b, c):
     return np.degrees(angle_rad)
 
 # --- App Config ---
+@st.cache_resource
+def load_pose_model():
+    """Cache the MediaPipe pose model to prevent reloading"""
+    return mp.solutions.pose.Pose(
+        static_image_mode=True,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5,
+        model_complexity=1  # Use a lower complexity model
+    )
+
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
-pose_static = mp_pose.Pose(static_image_mode=True, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+pose_static = load_pose_model()
 
-if "records" not in st.session_state:
-    st.session_state.records = []
-if "current_entry" not in st.session_state:
-    st.session_state.current_entry = {}
-if "landmark_image" not in st.session_state:
-    st.session_state.landmark_image = None
-if "abnormalities" not in st.session_state:
-    st.session_state.abnormalities = {}
+# Initialize session state
+for key in ['records', 'current_entry', 'landmark_image', 'abnormalities']:
+    if key not in st.session_state:
+        st.session_state[key] = [] if key == 'records' else {}
 
 # --- Input Form and Image Processing ---
 container = st.container()
@@ -110,12 +143,15 @@ with container:
         if input_mode == "Upload Image":
             if "camera" in st.session_state:
                 del st.session_state["camera"]
+                clear_image_memory()
             uploaded_file = st.file_uploader("Upload an image", type=["jpg", "png", "jpeg"])
             if uploaded_file:
                 image_data = Image.open(uploaded_file)
+                image_data = optimize_image(image_data)  # Optimize uploaded image
         else:  # Camera mode
             if "upload" in st.session_state:
                 del st.session_state["upload"]
+                clear_image_memory()
             camera_data = st.camera_input("Take a picture using device")
             if camera_data:
                 file_bytes = np.asarray(bytearray(camera_data.read()), dtype=np.uint8)
@@ -123,6 +159,7 @@ with container:
                 if frame is not None:
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     image_data = Image.fromarray(frame_rgb)
+                    image_data = optimize_image(image_data)  # Optimize camera image
 
 # Process image if available and name is provided
 if image_data and child_name:
@@ -135,10 +172,14 @@ if image_data and child_name:
     # Create a placeholder for messages
     message_placeholder = st.empty()
     
-    results = pose_static.process(img_np)
+    try:
+        results = pose_static.process(img_np)
+    except Exception as e:
+        st.error(f"Error processing image: {str(e)}")
+        results = None
     
     # Check if pose detection was successful
-    if not results.pose_landmarks:
+    if not results or not results.pose_landmarks:
         message_placeholder.error("⚠️ No person detected in the image. Please ensure that:")
         st.markdown("""
         - The full body is visible in the image
@@ -147,9 +188,7 @@ if image_data and child_name:
         - The image is clear and not blurry
         """)
         # Clear any previous results
-        st.session_state.current_entry = {}
-        st.session_state.landmark_image = None
-        st.session_state.abnormalities = {}
+        clear_image_memory()
     else:
         # Clear any previous error message
         message_placeholder.empty()
@@ -160,7 +199,9 @@ if image_data and child_name:
             img_with_landmarks, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
             mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
             mp_drawing.DrawingSpec(color=(255, 0, 0), thickness=2, circle_radius=2))
-        st.session_state.landmark_image = img_with_landmarks
+        
+        # Store optimized landmark image
+        st.session_state.landmark_image = optimize_image(img_with_landmarks)
 
         def is_landmark_visible(landmark):
             return (0.01 < landmark.x < 0.99 and 
@@ -328,15 +369,33 @@ if st.session_state.get("current_entry") and st.session_state.get("landmark_imag
 st.markdown("---")
 st.subheader("📊 View Collected Records")
 if st.session_state.records:
+    # Implement pagination for large datasets
+    records_per_page = 10
+    total_pages = len(st.session_state.records) // records_per_page + 1
+    current_page = st.selectbox("Select Page", range(1, total_pages + 1)) - 1
+    
+    start_idx = current_page * records_per_page
+    end_idx = start_idx + records_per_page
+    
     search_term = st.text_input("🔍 Search by Student Name or ID", key="search")
-    df = pd.DataFrame(st.session_state.records)
+    df = pd.DataFrame(st.session_state.records[start_idx:end_idx])
     if search_term:
-        df = df[df['Student Name'].str.contains(search_term, case=False) | df['Student ID'].str.contains(search_term, case=False)]
+        df = df[df['Student Name'].str.contains(search_term, case=False) | 
+                df['Student ID'].str.contains(search_term, case=False)]
     st.dataframe(df, use_container_width=True)
-    csv = df.to_csv(index=False).encode("utf-8")
+    
+    # Optimize CSV download
+    @st.cache_data
+    def convert_to_csv(df):
+        return df.to_csv(index=False).encode("utf-8")
+    
+    csv = convert_to_csv(df)
     st.download_button("📥 Download CSV", data=csv, file_name="posture_records.csv", mime="text/csv")
 else:
     st.info("No records to display yet.")
+
+# Clean up resources when the script ends
+clear_image_memory()
 
 # Add copyright footer
 st.markdown("""
