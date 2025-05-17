@@ -133,7 +133,7 @@ container = st.container()
 with container:
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
-        child_name = st.text_input("Enter the Child's Name")
+        child_name = st.text_input("Whats the Child's Name? (This is a mandatory field)")
         st.markdown("**Note:** If you're using a mobile device, the camera input is more reliable than file uploads.")
         
         # Add abnormality selection section
@@ -348,7 +348,7 @@ if image_data and child_name:
 
         entry = {
             "Student Name": child_name,
-            "Student ID": f"STU{random.randint(1000,9999)}",
+            "Student ID": f"FN-{random.randint(1000,9999)}",
             "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             **abnormalities,
             **metrics
