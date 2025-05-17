@@ -135,6 +135,58 @@ with container:
     with col2:
         child_name = st.text_input("Enter the Child's Name")
         st.markdown("**Note:** If you're using a mobile device, the camera input is more reliable than file uploads.")
+        
+        # Add abnormality selection section
+        st.markdown("### Select Abnormalities to Detect")
+        
+        # Initialize session state for abnormality selections if not exists
+        if 'selected_abnormalities' not in st.session_state:
+            st.session_state.selected_abnormalities = {
+                "Kyphosis": True,
+                "Lordosis": True,
+                "Tech Neck": True,
+                "Scoliosis": True,
+                "Flat Feet": True,
+                "Gait Abnormalities": True,
+                "Knock Knees": True,
+                "Bow Legs": True
+            }
+        
+        # Select All checkbox
+        select_all = st.checkbox("Select All", value=all(st.session_state.selected_abnormalities.values()))
+        
+        st.markdown("---")
+        
+        # Individual abnormality checkboxes
+        cols = st.columns(2)
+        abnormality_list = list(st.session_state.selected_abnormalities.keys())
+        half = len(abnormality_list) // 2
+        
+        # Update all checkboxes based on "Select All" state
+        if select_all:
+            st.session_state.selected_abnormalities = {k: True for k in st.session_state.selected_abnormalities}
+        else:
+            # If "Select All" is unchecked, uncheck all abnormalities
+            if all(st.session_state.selected_abnormalities.values()):  # Only uncheck all if they were all checked
+                st.session_state.selected_abnormalities = {k: False for k in st.session_state.selected_abnormalities}
+        
+        # First column of checkboxes
+        with cols[0]:
+            for abnormality in abnormality_list[:half]:
+                st.session_state.selected_abnormalities[abnormality] = st.checkbox(
+                    abnormality,
+                    value=st.session_state.selected_abnormalities[abnormality]
+                )
+        
+        # Second column of checkboxes
+        with cols[1]:
+            for abnormality in abnormality_list[half:]:
+                st.session_state.selected_abnormalities[abnormality] = st.checkbox(
+                    abnormality,
+                    value=st.session_state.selected_abnormalities[abnormality]
+                )
+        
+        st.markdown("---")
         input_mode = st.radio("Choose Input Mode", ["Upload Image", "Use Camera (Recommended for Mobile)"])
 
         image_data = None
@@ -259,43 +311,40 @@ if image_data and child_name:
             metrics["knee_x_diff"] = abs(lm[mp_pose.PoseLandmark.LEFT_KNEE.value].x - 
                                       lm[mp_pose.PoseLandmark.RIGHT_KNEE.value].x)
 
-        # Initialize abnormalities
-        abnormalities = {
-            "Kyphosis": False,
-            "Lordosis": False,
-            "Tech Neck": False,
-            "Scoliosis": False,
-            "Flat Feet": False,
-            "Gait Abnormalities": False,
-            "Knock Knees": False,
-            "Bow Legs": False
-        }
+        # Initialize abnormalities with only selected conditions
+        abnormalities = {k: False for k in st.session_state.selected_abnormalities if st.session_state.selected_abnormalities[k]}
 
-        # Only assess conditions if relevant metrics are available
-        if metrics["shoulder_z"] is not None and metrics["hip_z"] is not None:
-            abnormalities["Kyphosis"] = metrics["shoulder_z"] - metrics["hip_z"] > 0.15
+        # Only process selected abnormalities
+        if "Kyphosis" in abnormalities:
+            if metrics["shoulder_z"] is not None and metrics["hip_z"] is not None:
+                abnormalities["Kyphosis"] = metrics["shoulder_z"] - metrics["hip_z"] > 0.15
 
-        if metrics["hip_z"] is not None and metrics["knee_z"] is not None:
-            abnormalities["Lordosis"] = metrics["hip_z"] - metrics["knee_z"] > 0.1
+        if "Lordosis" in abnormalities:
+            if metrics["hip_z"] is not None and metrics["knee_z"] is not None:
+                abnormalities["Lordosis"] = metrics["hip_z"] - metrics["knee_z"] > 0.1
 
-        # Adjusted tech neck thresholds:
-        # - Increased angle threshold from 40 to 45 degrees
-        # - Increased distance threshold from 0.1 to 0.15
-        # - Added combined condition requiring both angle and distance to be significant
-        abnormalities["Tech Neck"] = (neck_angle > 45 and ear_shoulder_distance > 0.15)
+        if "Tech Neck" in abnormalities:
+            abnormalities["Tech Neck"] = (neck_angle > 45 and ear_shoulder_distance > 0.15)
 
-        if metrics["shoulder_y_diff"] is not None:
-            abnormalities["Scoliosis"] = metrics["shoulder_y_diff"] > 0.05
+        if "Scoliosis" in abnormalities:
+            if metrics["shoulder_y_diff"] is not None:
+                abnormalities["Scoliosis"] = metrics["shoulder_y_diff"] > 0.05
 
-        if metrics["foot_z_diff"] is not None:
-            abnormalities["Flat Feet"] = metrics["foot_z_diff"] < 0.05
+        if "Flat Feet" in abnormalities:
+            if metrics["foot_z_diff"] is not None:
+                abnormalities["Flat Feet"] = metrics["foot_z_diff"] < 0.05
 
-        if metrics["ankle_x_diff"] is not None:
-            abnormalities["Gait Abnormalities"] = metrics["ankle_x_diff"] > 0.25
+        if "Gait Abnormalities" in abnormalities:
+            if metrics["ankle_x_diff"] is not None:
+                abnormalities["Gait Abnormalities"] = metrics["ankle_x_diff"] > 0.25
 
-        if metrics["knee_x_diff"] is not None and metrics["ankle_x_diff"] is not None:
-            abnormalities["Knock Knees"] = metrics["knee_x_diff"] < metrics["ankle_x_diff"] * 0.7
-            abnormalities["Bow Legs"] = metrics["ankle_x_diff"] < metrics["knee_x_diff"] * 0.7
+        if "Knock Knees" in abnormalities:
+            if metrics["knee_x_diff"] is not None and metrics["ankle_x_diff"] is not None:
+                abnormalities["Knock Knees"] = metrics["knee_x_diff"] < metrics["ankle_x_diff"] * 0.7
+
+        if "Bow Legs" in abnormalities:
+            if metrics["knee_x_diff"] is not None and metrics["ankle_x_diff"] is not None:
+                abnormalities["Bow Legs"] = metrics["ankle_x_diff"] < metrics["knee_x_diff"] * 0.7
 
         entry = {
             "Student Name": child_name,
