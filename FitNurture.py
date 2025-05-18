@@ -108,6 +108,95 @@ def calculate_angle(a, b, c):
     angle_rad = np.arccos(cosine_angle)
     return np.degrees(angle_rad)
 
+def generate_user_manual_pdf():
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_font("Arial", size=14)
+
+    # Add logo if available
+    logo_paths = [
+        os.path.join("assets", "logo.jpg"),
+        os.path.join("assets", "logo.JPG"),
+        os.path.join("assets", "logo.png"),
+        os.path.join("assets", "logo.PNG")
+    ]
+    logo_path = next((p for p in logo_paths if os.path.exists(p)), None)
+    if logo_path:
+        pdf.image(logo_path, x=80, y=10, w=50)
+        pdf.ln(40)
+    else:
+        pdf.ln(20)
+
+    pdf.set_font("Arial", 'B', 18)
+    pdf.cell(0, 10, "FitNurture Posture Detection", ln=True, align='C')
+    pdf.set_font("Arial", size=14)
+    pdf.ln(10)
+    pdf.cell(0, 10, "User Manual", ln=True, align='C')
+    pdf.ln(15)
+
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(0, 10, "Step-by-Step Guide", ln=True)
+    pdf.set_font("Arial", size=12)
+    pdf.ln(5)
+
+    steps = [
+        "1. Open the FitNurture app.",
+        "2. Enter the required details (e.g., student name, age, etc.).",
+        "3. Choose your input method: Upload Image or Use Camera.",
+        "4. If uploading, select a clear, full-body image.",
+        "5. If using the camera, follow the camera guidelines below.",
+        "6. Submit the image for posture analysis.",
+        "7. Review the detected posture and any recommendations.",
+        "8. Download the PDF report if needed."
+    ]
+    for step in steps:
+        pdf.multi_cell(0, 8, step)
+    pdf.ln(10)
+
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(0, 10, "Camera Guidelines", ln=True)
+    pdf.set_font("Arial", size=12)
+    pdf.ln(5)
+    camera_guidelines = [
+        "- Ensure your head is near the top center of the frame.",
+        "- Stand straight, facing the camera.",
+        "- Make sure your full body is visible in the frame.",
+        "- Align your head between the horizontal guidelines.",
+        "- Keep your body centered between the vertical guidelines.",
+        "- Stand 6-8 feet away from the camera for best results.",
+        "- Use good lighting to improve detection accuracy.",
+        "- Avoid wearing loose or baggy clothing."
+    ]
+    for guide in camera_guidelines:
+        pdf.multi_cell(0, 8, guide)
+    pdf.ln(10)
+
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(0, 10, "Tips", ln=True)
+    pdf.set_font("Arial", size=12)
+    pdf.ln(5)
+    tips = [
+        "- Review the captured image before submitting.",
+        "- If the posture is not detected correctly, retake the photo.",
+        "- For best results, use a plain background."
+    ]
+    for tip in tips:
+        pdf.multi_cell(0, 8, tip)
+
+    # Save to a temporary file and offer download in Streamlit
+    import tempfile
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+        pdf.output(tmp_file.name)
+        st.success("User manual generated!")
+        with open(tmp_file.name, "rb") as f:
+            st.download_button(
+                label="Download User Manual (PDF)",
+                data=f,
+                file_name="FitNurture_User_Manual.pdf",
+                mime="application/pdf"
+            )
+
 # --- App Config ---
 @st.cache_resource
 def load_pose_model():
@@ -445,6 +534,21 @@ else:
 
 # Clean up resources when the script ends
 clear_image_memory()
+
+# Center the User Manual Download Button above the footer
+button_col1, button_col2, button_col3 = st.columns([2, 1, 2])
+with button_col2:
+    manual_path = os.path.join("assets", "FitNurture_User_Manual.pdf")
+    if os.path.exists(manual_path):
+        with open(manual_path, "rb") as f:
+            st.download_button(
+                label="Download User Manual (PDF)",
+                data=f,
+                file_name="FitNurture_User_Manual.pdf",
+                mime="application/pdf"
+            )
+    else:
+        st.warning("User manual PDF not found in assets folder.")
 
 # Add copyright footer
 st.markdown("""
