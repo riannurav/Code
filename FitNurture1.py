@@ -179,6 +179,88 @@ def calculate_angle(a, b, c):
     angle_rad = np.arccos(cosine_angle)
     return np.degrees(angle_rad)
 
+def add_landmark_labels(image, landmarks):
+    """Add labels with arrows to key landmarks"""
+    img = image.copy()
+    h, w = img.shape[:2]
+    
+    # Define key landmarks to label
+    landmark_labels = {
+        mp_pose.PoseLandmark.NOSE: "Head",
+        mp_pose.PoseLandmark.LEFT_SHOULDER: "L Shoulder",
+        mp_pose.PoseLandmark.RIGHT_SHOULDER: "R Shoulder",
+        mp_pose.PoseLandmark.LEFT_ELBOW: "L Elbow",
+        mp_pose.PoseLandmark.RIGHT_ELBOW: "R Elbow",
+        mp_pose.PoseLandmark.LEFT_HIP: "L Hip",
+        mp_pose.PoseLandmark.RIGHT_HIP: "R Hip",
+        mp_pose.PoseLandmark.LEFT_KNEE: "L Knee",
+        mp_pose.PoseLandmark.RIGHT_KNEE: "R Knee",
+        mp_pose.PoseLandmark.LEFT_ANKLE: "L Ankle",
+        mp_pose.PoseLandmark.RIGHT_ANKLE: "R Ankle"
+    }
+    
+    # Add labels with arrows
+    for landmark_id, label in landmark_labels.items():
+        landmark = landmarks.landmark[landmark_id]
+        if landmark.visibility > 0.5:  # Only label visible landmarks
+            px = int(landmark.x * w)
+            py = int(landmark.y * h)
+            
+            # Calculate offset for label placement
+            # Increase offset distance to place labels further out
+            base_offset = 70  # Increased from 50
+            
+            # Determine if point is on left or right half of image
+            if px < w/2:
+                # Left side - place label on left
+                offset_x = -base_offset
+                text_align = 'right'
+            else:
+                # Right side - place label on right
+                offset_x = base_offset
+                text_align = 'left'
+            
+            # Draw arrow
+            cv2.arrowedLine(
+                img,
+                (px + (offset_x//2), py),  # Start point (halfway to label)
+                (px, py),  # End point at landmark
+                (0, 0, 255),  # Red color
+                1,  # Reduced thickness
+                tipLength=0.3
+            )
+            
+            # Add label text
+            if text_align == 'right':
+                text_x = px + offset_x
+                text_anchor = (text_x - 5, py + 5)
+            else:
+                text_x = px + offset_x
+                text_anchor = (text_x + 5, py + 5)
+            
+            # Add white background to text for better readability
+            (text_w, text_h), _ = cv2.getTextSize(
+                label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            if text_align == 'right':
+                text_bg_pt1 = (text_anchor[0] - text_w - 4, text_anchor[1] - text_h - 4)
+                text_bg_pt2 = (text_anchor[0] + 4, text_anchor[1] + 4)
+            else:
+                text_bg_pt1 = (text_anchor[0] - 4, text_anchor[1] - text_h - 4)
+                text_bg_pt2 = (text_anchor[0] + text_w + 4, text_anchor[1] + 4)
+            
+            cv2.rectangle(img, text_bg_pt1, text_bg_pt2, (255, 255, 255), -1)
+            
+            cv2.putText(
+                img,
+                label,
+                text_anchor,
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 0, 255),
+                1
+            )
+    
+    return img
 
 # --- App Config ---
 @st.cache_resource
@@ -257,7 +339,20 @@ container = st.container()
 with container:
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
-        child_name = st.text_input("Whats the Child's Name? (This is a mandatory field)")
+        child_name = st.text_input("Whats the Child's Name? (This is a mandatory field)", key="child_name")
+        
+        # Show error if name is empty and user tries to proceed
+        if not child_name and ('camera_data' in st.session_state or 
+                             st.session_state.get('_file_uploader_key') is not None):
+            st.error("⚠️ Please enter the child's name before proceeding")
+            # Clear camera or file upload state to prevent processing
+            if 'camera_data' in st.session_state:
+                del st.session_state['camera_data']
+            if '_file_uploader_key' in st.session_state:
+                del st.session_state['_file_uploader_key']
+            # Rerun to reset the form
+            st.rerun()
+
         st.markdown("**Note:** If you're using a mobile device, the camera input is more reliable than file uploads.")
         
         # Add abnormality selection section
@@ -332,24 +427,29 @@ if st.session_state.previous_mode != input_mode:
 
 # Handle different input modes
 if input_mode == "Upload Image":
-    uploaded_file = st.file_uploader("Upload an image", type=["jpg", "png", "jpeg"])
+    if not child_name:
+        st.error("⚠️ Please enter the child's name before uploading an image")
+    uploaded_file = st.file_uploader("Upload an image", type=["jpg", "png", "jpeg"], key="_file_uploader_key")
     if uploaded_file:
         image_data = Image.open(uploaded_file)
         image_data = optimize_image(image_data)
 
 else:  # Camera mode
-    if "upload" in st.session_state:
-        del st.session_state["upload"]
-        clear_image_memory()
-    
-    camera_data = st.camera_input("Take a picture using device", key="camera_data")
-    if camera_data:
-        file_bytes = np.asarray(bytearray(camera_data.read()), dtype=np.uint8)
-        frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        if frame is not None:
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            image_data = Image.fromarray(frame_rgb)
-            image_data = optimize_image(image_data)
+    if not child_name:
+        st.error("⚠️ Please enter the child's name before using the camera")
+    else:
+        if "upload" in st.session_state:
+            del st.session_state["upload"]
+            clear_image_memory()
+        
+        camera_data = st.camera_input("Take a picture using device", key="camera_data")
+        if camera_data:
+            file_bytes = np.asarray(bytearray(camera_data.read()), dtype=np.uint8)
+            frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            if frame is not None:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                image_data = Image.fromarray(frame_rgb)
+                image_data = optimize_image(image_data)
 
 # Process image if available and name is provided
 if image_data and child_name:
@@ -377,26 +477,32 @@ if image_data and child_name:
         - The lighting is adequate
         - The image is clear and not blurry
         """)
-        # Clear any previous results
-        clear_image_memory()
     else:
         # Clear any previous error message
         message_placeholder.empty()
-        
         lm = results.pose_landmarks.landmark
         img_with_landmarks = img_np.copy()
-        mp_drawing.draw_landmarks(
-            img_with_landmarks, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
-            mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
-            mp_drawing.DrawingSpec(color=(255, 0, 0), thickness=2, circle_radius=2))
         
-        # Store optimized landmark image
-        st.session_state.landmark_image = optimize_image(img_with_landmarks)
+        # Draw pose landmarks
+        mp_drawing.draw_landmarks(
+            img_with_landmarks, 
+            results.pose_landmarks, 
+            mp_pose.POSE_CONNECTIONS,
+            mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
+            mp_drawing.DrawingSpec(color=(255, 0, 0), thickness=2, circle_radius=2)
+        )
+        
+        # Add labels to landmarks
+        img_with_landmarks = add_landmark_labels(img_with_landmarks, results.pose_landmarks)
+        
+        # Convert to PIL Image before storing
+        img_with_landmarks = cv2.cvtColor(img_with_landmarks, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(img_with_landmarks)
+        st.session_state.landmark_image = pil_image
 
+        # Check visibility of landmarks
         def is_landmark_visible(landmark):
-            return (0.01 < landmark.x < 0.99 and 
-                   0.01 < landmark.y < 0.99 and 
-                   landmark.visibility > 0.5)
+            return landmark.visibility > 0.5
 
         # Calculate neck angle using ear, nose, and shoulder points for better accuracy
         neck_angle = calculate_angle(
@@ -519,7 +625,7 @@ if st.session_state.get("current_entry") and st.session_state.get("landmark_imag
                 data = st.session_state.current_entry
                 stored_abnormalities = st.session_state.abnormalities
                 
-                # Create PDF in memory
+                # Create PDF
                 pdf = FPDF()
                 pdf.add_page()
                 
@@ -533,94 +639,91 @@ if st.session_state.get("current_entry") and st.session_state.get("landmark_imag
                 
                 if logo_path:
                     pdf.image(logo_path, x=80, y=10, w=50)
-                    pdf.ln(40)  # Reduced from 60 to 40
+                    pdf.ln(55)  # Space after logo
                 
-                # Add title
-                pdf.set_font("Arial", "B", 16)
-                pdf.cell(0, 8, "Posture Analysis Report", ln=True, align="C")  # Reduced from 10 to 8
-                pdf.ln(5)  # Reduced from 10 to 5
-                
-                # Add student details
                 pdf.set_font("Arial", "B", 12)
-                pdf.cell(0, 8, f"Student Name: {data['Student Name']}", ln=True)  # Reduced from 10 to 8
-                pdf.cell(0, 8, f"Student ID: {data['Student ID']}", ln=True)
-                pdf.cell(0, 8, f"Date: {data['Timestamp']}", ln=True)
-                pdf.ln(5)  # Reduced from 10 to 5
+                pdf.cell(0, 6, f"Student Name: {data['Student Name']}", ln=True)
+                pdf.cell(0, 6, f"Student ID: {data['Student ID']}", ln=True)
+                pdf.cell(0, 6, f"Date: {data['Timestamp']}", ln=True)
+                pdf.ln(3)
                 
-                # Add landmark image with further reduced size
+                # Add landmark image
                 if st.session_state.get("landmark_image") is not None:
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_img:
                         img = st.session_state.landmark_image
                         if isinstance(img, np.ndarray):
                             img = Image.fromarray(img)
                         img.save(tmp_img.name)
-                        pdf.image(tmp_img.name, x=45, y=None, w=110)  # Reduced from 120 to 110
+                        pdf.image(tmp_img.name, x=50, y=None, w=100)  # Reduced size
                     os.unlink(tmp_img.name)
-                pdf.ln(5)  # Reduced from 10 to 5
+                pdf.ln(3)
                 
                 # Add analysis results
                 pdf.set_font("Arial", "B", 14)
-                pdf.cell(0, 8, "Posture Analysis Results:", ln=True)  # Reduced from 10 to 8
-                pdf.ln(3)  # Reduced from 5 to 3
+                pdf.cell(0, 8, "Posture Analysis Results:", ln=True)
+                pdf.ln(3)
                 
                 pdf.set_font("Arial", "", 12)
                 detected_conditions = []
                 for condition, present in stored_abnormalities.items():
-                    pdf.cell(0, 8, f"- {condition}: {'Present' if present else 'Not Present'}", ln=True)  # Reduced from 10 to 8
+                    pdf.cell(0, 8, f"- {condition}: {'Present' if present else 'Not Present'}", ln=True)
                     if present:
                         detected_conditions.append(condition)
                 
                 # Add recommendations
                 if detected_conditions:
-                    pdf.ln(5)  # Reduced from 10 to 5
+                    pdf.ln(5)
                     pdf.set_font("Arial", "B", 14)
-                    pdf.cell(0, 8, "Our Recommendations:", ln=True)  # Reduced from 10 to 8
-                    pdf.ln(3)  # Reduced from 5 to 3
+                    pdf.cell(0, 8, "Our Recommendations:", ln=True)
+                    pdf.ln(3)
                     
                     pdf.set_font("Arial", "", 12)
                     for condition in detected_conditions:
                         if condition in POSTURE_RECOMMENDATIONS:
                             pdf.set_font("Arial", "B", 12)
-                            pdf.cell(0, 8, f"Regarding {condition}:", ln=True)  # Reduced from 10 to 8
+                            pdf.cell(0, 8, f"Regarding {condition}:", ln=True)
                             pdf.set_font("Arial", "", 12)
                             recommendations = POSTURE_RECOMMENDATIONS[condition]
                             recommendations_text = " ".join(r.replace("- ", "") for r in recommendations) + "."
-                            pdf.multi_cell(0, 8, recommendations_text)  # Reduced from 10 to 8
-                            pdf.ln(3)  # Reduced from 5 to 3
+                            pdf.multi_cell(0, 8, recommendations_text)
+                            pdf.ln(3)
                 
                 # Add footer with disclaimer and website
-                pdf.ln(5)  # Reduced from 10 to 5
+                pdf.ln(5)
                 footer_y = pdf.get_y()
-                if footer_y < 230:  # Reduced from 250 to 230
+                if footer_y < 230:
                     pdf.ln(230 - footer_y)
-
+                
                 # Add separator line
                 pdf.line(10, pdf.get_y(), 200, pdf.get_y())
-                pdf.ln(3)  # Reduced from 5 to 3
-
-                # Add disclaimer and website URL
+                pdf.ln(3)
+                
+                # Add disclaimer
                 pdf.set_font("Arial", "I", 8)
                 disclaimer = (
                     "Disclaimer: This report is based on an automated analysis and is for informational purposes only. "
                     "It is not a substitute for professional medical advice, diagnosis, or treatment. "
                     "Consult with a qualified healthcare provider for any health concerns."
                 )
-                pdf.multi_cell(0, 4, disclaimer, align="C")  # Reduced from 5 to 4
+                pdf.multi_cell(0, 4, disclaimer, align="C")
                 
-                # Add website URL right after disclaimer
-                pdf.ln(1)  # Reduced from 2 to 1
+                # Add website URL
+                pdf.ln(1)
                 pdf.set_font("Arial", "", 10)
-                pdf.cell(0, 8, "www.futurenurture.in", ln=True, align="C")  # Reduced from 10 to 8
+                pdf.cell(0, 8, "www.futurenurture.in", ln=True, align="C")
                 
-                # Save and offer download
+                # Save PDF and create download button
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
                     pdf_path = tmp_file.name
                 
+                # Save PDF outside the context manager
                 pdf.output(pdf_path)
                 
+                # Read the file and create download button
                 with open(pdf_path, 'rb') as pdf_file:
                     pdf_bytes = pdf_file.read()
                 
+                # Clean up the temporary file
                 os.unlink(pdf_path)
                 
                 st.success("PDF Report Generated!")
