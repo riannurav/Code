@@ -6,418 +6,684 @@ from fpdf import FPDF
 from PIL import Image
 import tempfile
 import os
-import math # Import math for calculating angles if needed later
-import time # Import time for potential delays
+import random
+import pandas as pd
+from datetime import datetime
+import gc  # Import garbage collector
+
+# --- Memory Management Functions ---
+def clear_image_memory():
+    """Clear image-related data from session state"""
+    if 'landmark_image' in st.session_state:
+        del st.session_state['landmark_image']
+    if 'current_entry' in st.session_state:
+        del st.session_state['current_entry']
+    if 'abnormalities' in st.session_state:
+        del st.session_state['abnormalities']
+    gc.collect()  # Force garbage collection
+
+def optimize_image(image, max_size=800):
+    """Resize image while maintaining aspect ratio"""
+    if isinstance(image, np.ndarray):
+        img = Image.fromarray(image)
+    else:
+        img = image
+    
+    # Calculate new size maintaining aspect ratio
+    ratio = max_size / max(img.size)
+    if ratio < 1:  # Only resize if image is larger than max_size
+        new_size = tuple(int(dim * ratio) for dim in img.size)
+        img = img.resize(new_size, Image.LANCZOS)
+    
+    return img
+
+# --- Page Config ---
+st.set_page_config(
+    page_title="FitNurture : Posture Detection",
+    page_icon="🧘‍♀️",
+    layout="wide"
+)
+# Add this custom CSS after your existing page config
+st.markdown("""
+    <style>
+    .camera-container {
+        position: relative;
+        width: fit-content;
+        margin: auto;
+    }
+    
+    .posture-guidelines {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+    }
+    
+    /* Center vertical line for body alignment */
+    .center-line {
+        position: absolute;
+        left: 50%;
+        height: 100%;
+        width: 2px;
+        background-color: rgba(0, 255, 0, 0.5);
+    }
+    
+    /* Head alignment box */
+    .head-box {
+        position: absolute;
+        top: 5%;
+        left: 40%;
+        right: 40%;
+        height: 15%;
+        border: 2px dashed rgba(255, 165, 0, 0.7);
+        border-radius: 50%;
+    }
+    
+    /* Body frame */
+    .body-frame {
+        position: absolute;
+        top: 20%;
+        left: 30%;
+        right: 30%;
+        bottom: 5%;
+        border: 2px solid rgba(0, 255, 0, 0.5);
+    }
+    
+    /* Text labels */
+    .guide-label {
+        position: absolute;
+        color: white;
+        background-color: rgba(0, 0, 0, 0.7);
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 12px;
+    }
+    
+    .head-label {
+        top: 2%;
+        left: 50%;
+        transform: translateX(-50%);
+    }
+    
+    .body-label {
+        top: 50%;
+        right: 25%;
+        transform: translateY(-50%);
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- Custom CSS for Copyright Only ---
+st.markdown("""
+    <style>
+        .copyright-footer {
+            text-align: center;
+            padding: 20px 0;
+            margin-top: 30px;
+            border-top: 1px solid #e5e5e5;
+            color: #666;
+            font-size: 14px;
+        }
+        .copyright-footer a {
+            color: #666;
+            text-decoration: none;
+        }
+        .copyright-footer a:hover {
+            text-decoration: underline;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- Logo and Title Section ---
+# Title centered at the top
+st.markdown("<h2 style='text-align: center; font-size: 24px; margin-bottom: 20px;'>FitNurture : Posture Detection</h2>", unsafe_allow_html=True)
+
+# Center the logo using columns
+col1, col2, col3 = st.columns([1.2, 1, 1.2])
+with col2:
+    # Check for logo in different possible formats
+    logo_paths = [
+        os.path.join("assets", "logo.jpg"),
+        os.path.join("assets", "logo.JPG"),
+        os.path.join("assets", "logo.png"),
+        os.path.join("assets", "logo.PNG")
+    ]
+    
+    logo_found = False
+    for logo_path in logo_paths:
+        if os.path.exists(logo_path):
+            try:
+                st.image(logo_path, width=225, use_container_width=True)
+                logo_found = True
+                break
+            except Exception as e:
+                continue
+    
+    if not logo_found:
+        st.warning("Logo not found. Please ensure the logo file is in the assets directory.")
+
+# Add some spacing after the logo
+st.markdown("<br>", unsafe_allow_html=True)
 
 # --- Function Definitions ---
-
 def calculate_angle(a, b, c):
-    """Calculates the angle between three points."""
-    a = np.array(a) # First point
-    b = np.array(b) # Mid point
-    c = np.array(c) # End point
-
-    # Calculate vectors
+    a = np.array(a)
+    b = np.array(b)
+    c = np.array(c)
     ba = a - b
     bc = c - b
-
-    # Calculate cosine of the angle using dot product
     cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
-    # Ensure the value is within the valid range for arccos
     cosine_angle = np.clip(cosine_angle, -1.0, 1.0)
     angle_rad = np.arccos(cosine_angle)
-
-    # Convert radians to degrees
-    angle_deg = np.degrees(angle_rad)
-
-    return angle_deg
-
-def check_kyphosis(landmarks):
-    """
-    Checks for potential kyphosis based on shoulder and hip Z-axis position.
-    Note: This is a simplified check and may not be accurate without a proper sagittal view.
-    """
-    # Using Z-axis for a very rough estimate from a frontal view
-    # A more accurate check requires a side view and angle calculations
-    try:
-        shoulder_z = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].z
-        hip_z = landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].z
-        # If shoulder is significantly behind the hip (larger Z value), could indicate kyphosis
-        return shoulder_z - hip_z > 0.15 # Threshold might need adjustment
-    except (AttributeError, IndexError):
-        return False # Handle cases where landmarks are not detected or missing attributes
-
-def check_lordosis(landmarks):
-    """
-    Checks for potential lordosis based on hip and knee Z-axis position.
-    Note: This is a simplified check and may not be accurate without a proper sagittal view.
-    """
-    # Using Z-axis for a very rough estimate from a frontal view
-    # A more accurate check requires a side view and angle calculations
-    try:
-        hip_z = landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].z
-        knee_z = landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value].z
-        # If hip is significantly behind the knee (larger Z value), could indicate lordosis
-        return hip_z - knee_z > 0.1 # Threshold might need adjustment
-    except (AttributeError, IndexError):
-        return False # Handle cases where landmarks are not detected or missing attributes
+    return np.degrees(angle_rad)
 
 
-def check_tech_neck(landmarks, threshold_angle=15):
-    """
-    Checks for potential tech neck based on the angle between ear, shoulder, and hip.
-    A smaller angle might indicate the head is forward.
-    Requires LEFT_EAR, LEFT_SHOULDER, and LEFT_HIP landmarks.
-    """
-    try:
-        ear = landmarks[mp_pose.PoseLandmark.LEFT_EAR.value]
-        shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value]
-        hip = landmarks[mp_pose.PoseLandmark.LEFT_HIP.value]
+# --- App Config ---
+@st.cache_resource
+def load_pose_model():
+    """Cache the MediaPipe pose model to prevent reloading"""
+    return mp.solutions.pose.Pose(
+        static_image_mode=True,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5,
+        model_complexity=1  # Use a lower complexity model
+    )
 
-        # Calculate the angle formed by hip, shoulder, and ear
-        # Ensure points are valid before calculating
-        if not all([ear, shoulder, hip]):
-             return False
-        angle = calculate_angle(np.array([hip.x, hip.y]), np.array([shoulder.x, shoulder.y]), np.array([ear.x, ear.y]))
-
-        # A smaller angle than the threshold might indicate tech neck
-        # The threshold value might need tuning based on typical posture angles
-        return angle < threshold_angle
-    except (AttributeError, IndexError, ValueError): # Added ValueError for potential issues in calculate_angle
-        return False # Handle cases where landmarks are not detected or calculation fails
-
-
-def check_scoliosis(landmarks, threshold_y_diff=0.05):
-    """
-    Checks for potential scoliosis based on the vertical difference between shoulders.
-    Requires LEFT_SHOULDER and RIGHT_SHOULDER landmarks.
-    """
-    try:
-        l_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value]
-        r_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
-        # Check if the vertical position (y-coordinate) of shoulders is significantly different
-        return abs(l_shoulder.y - r_shoulder.y) > threshold_y_diff # Threshold might need adjustment
-    except (AttributeError, IndexError):
-        return False # Handle cases where landmarks are not detected
-
-def check_flat_feet(landmarks, threshold_z_diff=0.05):
-    """
-    Checks for potential flat feet based on the Z-axis difference between heel and toe.
-    Note: This is a simplified check from a frontal view and may not be accurate.
-    Requires LEFT_HEEL and LEFT_FOOT_INDEX landmarks.
-    """
-    try:
-        heel = landmarks[mp_pose.PoseLandmark.LEFT_HEEL.value]
-        toe = landmarks[mp_pose.PoseLandmark.LEFT_FOOT_INDEX.value]
-        # A smaller Z-axis difference might indicate less arch height
-        return abs(heel.z - toe.z) < threshold_z_diff # Threshold might need adjustment
-    except (AttributeError, IndexError):
-        return False # Handle cases where landmarks are not detected
-
-def check_gait_abnormalities(landmarks, threshold_x_diff=0.25):
-    """
-    Checks for potential gait abnormalities based on the horizontal distance between ankles.
-    Note: This is a simplified check from a static image and is more indicative of stance width.
-    Requires LEFT_ANKLE and RIGHT_ANKLE landmarks.
-    """
-    try:
-        l_ankle = landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value]
-        r_ankle = landmarks[mp_pose.PoseLandmark.RIGHT_ANKLE.value]
-        # A large horizontal distance might indicate a wide stance
-        return abs(l_ankle.x - r_ankle.x) > threshold_x_diff # Threshold might need adjustment
-    except (AttributeError, IndexError):
-        return False # Handle cases where landmarks are not detected
-
-def check_knock_knees(landmarks):
-    """
-    Checks for potential knock knees based on the horizontal distance between knees and ankles.
-    Requires LEFT_KNEE, RIGHT_KNEE, LEFT_ANKLE, and RIGHT_ANKLE landmarks.
-    """
-    try:
-        l_knee = landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value]
-        r_knee = landmarks[mp_pose.PoseLandmark.RIGHT_KNEE.value]
-        l_ankle = landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value]
-        r_ankle = landmarks[mp_pose.PoseLandmark.RIGHT_ANKLE.value]
-
-        # Calculate horizontal distances
-        knee_distance = abs(l_knee.x - r_knee.x)
-        ankle_distance = abs(l_ankle.x - r_ankle.x)
-
-        # If knees are significantly closer than ankles, it might indicate knock knees
-        return knee_distance < ankle_distance * 0.7 # Ratio might need adjustment
-    except (AttributeError, IndexError):
-        return False # Handle cases where landmarks are not detected
-
-def check_bow_legs(landmarks):
-    """
-    Checks for potential bow legs based on the horizontal distance between knees and ankles.
-    Requires LEFT_KNEE, RIGHT_KNEE, LEFT_ANKLE, and RIGHT_ANKLE landmarks.
-    """
-    try:
-        l_knee = landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value]
-        r_knee = landmarks[mp_pose.PoseLandmark.RIGHT_KNEE.value]
-        l_ankle = landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value]
-        r_ankle = landmarks[mp_pose.PoseLandmark.RIGHT_ANKLE.value]
-
-        # Calculate horizontal distances
-        knee_distance = abs(l_knee.x - r_knee.x)
-        ankle_distance = abs(l_ankle.x - r_ankle.x)
-
-        # If ankles are significantly closer than knees, it might indicate bow legs
-        return ankle_distance < knee_distance * 0.7 # Ratio might need adjustment
-    except (AttributeError, IndexError):
-        return False # Handle cases where landmarks are not detected
-
-# --- Streamlit App Logic ---
-
-# Mediapipe setup
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
-# Using static_image_mode=True for image upload, False for webcam (though webcam capture is static here)
-pose_static = mp_pose.Pose(static_image_mode=True, min_detection_confidence=0.5, min_tracking_confidence=0.5)
-pose_live = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+pose_static = load_pose_model()
 
+# Initialize session state
+for key in ['records', 'current_entry', 'landmark_image', 'abnormalities']:
+    if key not in st.session_state:
+        st.session_state[key] = [] if key == 'records' else {}
 
-st.set_page_config(page_title="FitNurture : Posture Detection")
-st.title("FitNurture : Posture Detection")
+# --- Posture Recommendations ---
+POSTURE_RECOMMENDATIONS = {
+    "Kyphosis": [
+        "- Practice shoulder blade squeezes",
+        "- Strengthen upper back muscles",
+        "- Maintain proper sitting posture",
+        "- Consider physical therapy exercises"
+    ],
+    "Lordosis": [
+        "- Core strengthening exercises",
+        "- Hip flexor stretches",
+        "- Pelvic tilt exercises",
+        "- Regular posture checks"
+    ],
+    "Tech Neck": [
+        "- Adjust device height to eye level",
+        "- Take regular breaks from screens",
+        "- Neck strengthening exercises",
+        "- Practice chin tucks"
+    ],
+    "Scoliosis": [
+        "- Consult with a spine specialist",
+        "- Core strengthening exercises",
+        "- Swimming or water therapy",
+        "- Regular monitoring"
+    ],
+    "Flat Feet": [
+        "- Use arch support insoles",
+        "- Foot strengthening exercises",
+        "- Proper footwear selection",
+        "- Consider physical therapy"
+    ],
+    "Gait Abnormalities": [
+        "- Gait analysis with a specialist",
+        "- Balance exercises",
+        "- Proper footwear",
+        "- Regular walking practice"
+    ],
+    "Knock Knees": [
+        "- Strengthening exercises for legs",
+        "- Balance training",
+        "- Proper footwear",
+        "- Regular monitoring"
+    ],
+    "Bow Legs": [
+        "- Consult with an orthopedic specialist",
+        "- Strengthening exercises",
+        "- Balance training",
+        "- Regular monitoring"
+    ]
+}
 
-child_name = st.text_input("Enter the Child's Name")
-input_mode = st.radio("Choose Input Mode", ["Upload Image", "Use Webcam"])
-
-# Initialize session state for webcam capture and capture trigger
-if 'is_capturing' not in st.session_state:
-    st.session_state.is_capturing = False
-if 'captured_image' not in st.session_state:
-    st.session_state.captured_image = None
-if 'capture_triggered' not in st.session_state:
-    st.session_state.capture_triggered = False
-
-
-image = None # This variable will hold the final image for analysis
-
-if input_mode == "Upload Image":
-    # Reset webcam state if switching mode
-    st.session_state.is_capturing = False
-    st.session_state.captured_image = None
-    st.session_state.capture_triggered = False # Reset capture trigger
-
-    uploaded_file = st.file_uploader("Upload an image", type=["jpg", "png", "jpeg"], key="upload")
-    if uploaded_file:
-        image = Image.open(uploaded_file)
-
-elif input_mode == "Use Camera (Recommended for Mobile)":
-    frame_placeholder = st.empty()
-
-    if not st.session_state.is_capturing and not st.session_state.capture_triggered:
-        # Show button to start webcam if not already capturing or capture triggered
-        if st.button("Start Webcam", key="start_webcam"):
-            st.session_state.is_capturing = True
-            st.session_state.captured_image = None # Clear previous capture
-            st.session_state.capture_triggered = False # Ensure capture trigger is false
-            st.rerun() # Rerun the script to start capture loop
-    elif st.session_state.is_capturing:
-        # If capturing, show the live feed and capture button
-        st.write("Live Webcam Feed:")
-        cap = cv2.VideoCapture(0) # Start video capture
-
-        if not cap.isOpened():
-            st.error("Cannot access webcam. Please ensure it's connected and not in use by another application.")
-            st.session_state.is_capturing = False # Reset state
-            st.session_state.capture_triggered = False
-            st.rerun() # Rerun to show the start button again
+# --- Input Form and Image Processing ---
+container = st.container()
+with container:
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        child_name = st.text_input("Whats the Child's Name? (This is a mandatory field)")
+        st.markdown("**Note:** If you're using a mobile device, the camera input is more reliable than file uploads.")
+        
+        # Add abnormality selection section
+        st.markdown("### Select Abnormalities to Detect")
+        
+        # Initialize session state for abnormality selections if not exists
+        if 'selected_abnormalities' not in st.session_state:
+            st.session_state.selected_abnormalities = {
+                "Kyphosis": True,
+                "Lordosis": True,
+                "Tech Neck": True,
+                "Scoliosis": True,
+                "Flat Feet": True,
+                "Gait Abnormalities": True,
+                "Knock Knees": True,
+                "Bow Legs": True
+            }
+        
+        # Select All checkbox
+        select_all = st.checkbox("Select All", value=all(st.session_state.selected_abnormalities.values()))
+        
+        st.markdown("---")
+        
+        # Individual abnormality checkboxes
+        cols = st.columns(2)
+        abnormality_list = list(st.session_state.selected_abnormalities.keys())
+        half = len(abnormality_list) // 2
+        
+        # Update all checkboxes based on "Select All" state
+        if select_all:
+            st.session_state.selected_abnormalities = {k: True for k in st.session_state.selected_abnormalities}
         else:
-            # Place the Capture button outside the loop
-            capture_button = st.button("Capture and Analyze", key="webcam_capture_analyze")
+            # If "Select All" is unchecked, uncheck all abnormalities
+            if all(st.session_state.selected_abnormalities.values()):  # Only uncheck all if they were all checked
+                st.session_state.selected_abnormalities = {k: False for k in st.session_state.selected_abnormalities}
+        
+        # First column of checkboxes
+        with cols[0]:
+            for abnormality in abnormality_list[:half]:
+                st.session_state.selected_abnormalities[abnormality] = st.checkbox(
+                    abnormality,
+                    value=st.session_state.selected_abnormalities[abnormality]
+                )
+        
+        # Second column of checkboxes
+        with cols[1]:
+            for abnormality in abnormality_list[half:]:
+                st.session_state.selected_abnormalities[abnormality] = st.checkbox(
+                    abnormality,
+                    value=st.session_state.selected_abnormalities[abnormality]
+                )
+        
+        st.markdown("---")
 
-            if capture_button:
-                 st.session_state.capture_triggered = True # Set trigger
-                 st.session_state.is_capturing = False # Stop capturing
-                 # No rerun here, the loop will finish and then the code below will run
+# Store the input mode in session state to track changes
+if 'previous_mode' not in st.session_state:
+    st.session_state.previous_mode = None
 
-            while st.session_state.is_capturing:
-                ret, frame = cap.read() # Read a frame
+input_mode = st.radio("Choose Input Mode", ["Upload Image", "Use Camera (Recommended for Mobile)"])
+image_data = None
 
-                if ret:
-                    # Convert frame to RGB
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+# Handle mode switching and camera cleanup
+if st.session_state.previous_mode != input_mode:
+    st.session_state.previous_mode = input_mode
+    # Clear any existing camera session
+    if "camera" in st.session_state:
+        del st.session_state["camera"]
+    if "camera_data" in st.session_state:
+        del st.session_state["camera_data"]
+    clear_image_memory()
+    st.rerun()
 
-                    # Process the frame for landmarks
-                    results_live = pose_live.process(frame_rgb)
+# Handle different input modes
+if input_mode == "Upload Image":
+    uploaded_file = st.file_uploader("Upload an image", type=["jpg", "png", "jpeg"])
+    if uploaded_file:
+        image_data = Image.open(uploaded_file)
+        image_data = optimize_image(image_data)
 
-                    # Draw landmarks on the frame
-                    if results_live.pose_landmarks:
-                         mp_drawing.draw_landmarks(
-                             frame_rgb,
-                             results_live.pose_landmarks,
-                             mp_pose.POSE_CONNECTIONS,
-                             mp_drawing.DrawingSpec(color=(245,117,66), thickness=2, circle_radius=2),
-                             mp_drawing.DrawingSpec(color=(245,66,230), thickness=2, circle_radius=2)
-                         )
+else:  # Camera mode
+    if "upload" in st.session_state:
+        del st.session_state["upload"]
+        clear_image_memory()
+    
+    camera_data = st.camera_input("Take a picture using device", key="camera_data")
+    if camera_data:
+        file_bytes = np.asarray(bytearray(camera_data.read()), dtype=np.uint8)
+        frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        if frame is not None:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            image_data = Image.fromarray(frame_rgb)
+            image_data = optimize_image(image_data)
 
-                    # Display the live frame with landmarks
-                    frame_placeholder.image(frame_rgb, caption="Live Feed with Landmarks", channels="RGB", width=600) # Adjust width as needed
-                    st.session_state.current_frame = frame_rgb # Store current frame
-
-                else:
-                    st.warning("Could not read frame from webcam.")
-                    st.session_state.is_capturing = False # Stop capturing
-                    st.session_state.capture_triggered = False
-                    break # Exit the loop
-
-            # After the loop stops (either by button or error)
-            cap.release() # Release the camera
-
-            # If capture was triggered, process the last frame
-            if st.session_state.capture_triggered:
-                 if 'current_frame' in st.session_state and st.session_state.current_frame is not None:
-                      st.session_state.captured_image = st.session_state.current_frame
-                 st.session_state.capture_triggered = False # Reset trigger
-                 st.rerun() # Rerun to process the captured image
-
-# Use the captured image from session state if available and input mode is webcam
-if input_mode == "Use Webcam" and st.session_state.captured_image is not None:
-    image = Image.fromarray(st.session_state.captured_image)
-    # Clear the captured image from session state after processing to avoid re-analysis
-    # st.session_state.captured_image = None # Keep it to display the captured image below
-
-
-# --- Posture Analysis and PDF Generation ---
-if image is not None: # Check if an image is available for analysis
-    # Display the image being analyzed (either uploaded or captured)
-    st.image(image, caption="Image for Analysis", use_column_width=True)
-
-    img_np = np.array(image)
-
-    # Convert image to RGB for Mediapipe if it's not already
-    if img_np.shape[-1] == 4: # Check if image has alpha channel
+# Process image if available and name is provided
+if image_data and child_name:
+    img_np = np.array(image_data)
+    if img_np.shape[-1] == 4:
         img_np = cv2.cvtColor(img_np, cv2.COLOR_RGBA2RGB)
-    elif len(img_np.shape) == 2: # Check if image is grayscale
-         img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2RGB)
+    elif len(img_np.shape) == 2:
+        img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2RGB)
 
-
-    results = pose_static.process(img_np) # Use pose_static for the uploaded/captured image
-
-    abnormalities = {
-        "Kyphosis": False,
-        "Lordosis": False,
-        "Tech Neck": False,
-        "Scoliosis": False,
-        "Flat Feet": False,
-        "Gait Abnormalities": False,
-        "Knock Knees": False,
-        "Bow Legs": False
-    }
-
-    if results.pose_landmarks:
+    # Create a placeholder for messages
+    message_placeholder = st.empty()
+    
+    try:
+        results = pose_static.process(img_np)
+    except Exception as e:
+        st.error(f"Error processing image: {str(e)}")
+        results = None
+    
+    # Check if pose detection was successful
+    if not results or not results.pose_landmarks:
+        message_placeholder.error("⚠️ No person detected in the image. Please ensure that:")
+        st.markdown("""
+        - The full body is visible in the image
+        - The person is standing straight
+        - The lighting is adequate
+        - The image is clear and not blurry
+        """)
+        # Clear any previous results
+        clear_image_memory()
+    else:
+        # Clear any previous error message
+        message_placeholder.empty()
+        
         lm = results.pose_landmarks.landmark
-
-        # Perform checks using the defined functions
-        if check_kyphosis(lm):
-            abnormalities["Kyphosis"] = True
-        if check_lordosis(lm):
-            abnormalities["Lordosis"] = True
-        # Using the angle-based check for tech neck
-        if check_tech_neck(lm):
-            abnormalities["Tech Neck"] = True
-        if check_scoliosis(lm):
-            abnormalities["Scoliosis"] = True
-        if check_flat_feet(lm):
-            abnormalities["Flat Feet"] = True
-        if check_gait_abnormalities(lm):
-            abnormalities["Gait Abnormalities"] = True
-        if check_knock_knees(lm):
-            abnormalities["Knock Knees"] = True
-        if check_bow_legs(lm):
-            abnormalities["Bow Legs"] = True
-
-        st.success("Analysis Complete")
-        st.write(f"### Abnormality Detection for {child_name}:")
-        for condition, present in abnormalities.items():
-            icon = "✅" if present else "❌"
-            st.markdown(f"- {condition}: {icon}")
-
-        # --- Draw Landmarks on the Analyzed Image ---
-        # Create a copy to draw on so the original uploaded image isn't modified
         img_with_landmarks = img_np.copy()
         mp_drawing.draw_landmarks(
-            img_with_landmarks,
-            results.pose_landmarks,
-            mp_pose.POSE_CONNECTIONS,
-            mp_drawing.DrawingSpec(color=(245,117,66), thickness=2, circle_radius=2),
-            mp_drawing.DrawingSpec(color=(245,66,230), thickness=2, circle_radius=2)
+            img_with_landmarks, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
+            mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
+            mp_drawing.DrawingSpec(color=(255, 0, 0), thickness=2, circle_radius=2))
+        
+        # Store optimized landmark image
+        st.session_state.landmark_image = optimize_image(img_with_landmarks)
+
+        def is_landmark_visible(landmark):
+            return (0.01 < landmark.x < 0.99 and 
+                   0.01 < landmark.y < 0.99 and 
+                   landmark.visibility > 0.5)
+
+        # Calculate neck angle using ear, nose, and shoulder points for better accuracy
+        neck_angle = calculate_angle(
+            [lm[mp_pose.PoseLandmark.RIGHT_EAR.value].x, lm[mp_pose.PoseLandmark.RIGHT_EAR.value].y],
+            [lm[mp_pose.PoseLandmark.NOSE.value].x, lm[mp_pose.PoseLandmark.NOSE.value].y],
+            [lm[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].x, lm[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].y]
         )
-        st.image(img_with_landmarks, caption="Analyzed Image with Landmarks", channels="RGB", use_column_width=True)
 
+        # Calculate forward head position
+        ear_shoulder_distance = abs(lm[mp_pose.PoseLandmark.RIGHT_EAR.value].x - lm[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].x)
 
-        # --- PDF Generation ---
-        if st.button("Generate PDF Summary", key="generate_pdf"):
-            pdf = FPDF()
-            pdf.add_page()
-            pdf.set_font("Arial", size=12)
-            pdf.cell(200, 10, txt=f"Posture Analysis Report for {child_name}", ln=True, align='C')
-            pdf.ln(10)
+        # Initialize metrics with None values
+        metrics = {
+            "shoulder_z": None,
+            "hip_z": None,
+            "knee_z": None,
+            "neck_angle": neck_angle,
+            "ear_shoulder_distance": ear_shoulder_distance,
+            "shoulder_y_diff": None,
+            "foot_z_diff": None,
+            "ankle_x_diff": None,
+            "knee_x_diff": None
+        }
 
-            pdf.cell(200, 10, txt="Detected Issues:", ln=True)
-            issues_found = False
-            for condition, present in abnormalities.items():
-                if present:
-                    # Use simple ASCII characters for PDF
-                    pdf.cell(200, 10, txt=f"- {condition}: Yes", ln=True)
-                    issues_found = True
+        # Only calculate metrics if relevant landmarks are visible
+        if (is_landmark_visible(lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value]) and 
+            is_landmark_visible(lm[mp_pose.PoseLandmark.RIGHT_SHOULDER.value])):
+            metrics["shoulder_z"] = lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].z
+            metrics["shoulder_y_diff"] = abs(lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y - 
+                                          lm[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].y)
 
-            if not issues_found:
-                pdf.cell(200, 10, txt="No significant posture abnormalities detected.", ln=True)
+        if is_landmark_visible(lm[mp_pose.PoseLandmark.LEFT_HIP.value]):
+            metrics["hip_z"] = lm[mp_pose.PoseLandmark.LEFT_HIP.value].z
 
-            pdf.ln(10)
-            pdf.cell(200, 10, txt="Recommendations:", ln=True)
-            recommendations_added = False
-            if abnormalities["Kyphosis"]:
-                pdf.cell(200, 10, txt="- Strengthen upper back and stretch chest muscles.", ln=True)
-                recommendations_added = True
-            if abnormalities["Lordosis"]:
-                pdf.cell(200, 10, txt="- Strengthen core and hamstrings.", ln=True)
-                recommendations_added = True
-            if abnormalities["Tech Neck"]:
-                pdf.cell(200, 10, txt="- Reduce screen time, raise device height.", ln=True)
-                recommendations_added = True
-            if abnormalities["Scoliosis"]:
-                pdf.cell(200, 10, txt="- Seek professional orthopedic assessment.", ln=True)
-                recommendations_added = True
-            if abnormalities["Flat Feet"]:
-                pdf.cell(200, 10, txt="- Use orthotic insoles or see podiatrist.", ln=True)
-                recommendations_added = True
-            if abnormalities["Gait Abnormalities"]:
-                pdf.cell(200, 10, txt="- Consult physiotherapist for gait correction.", ln=True)
-                recommendations_added = True
-            if abnormalities["Knock Knees"]:
-                pdf.cell(200, 10, txt="- Strengthen outer thigh and hip muscles.", ln=True)
-                recommendations_added = True
-            if abnormalities["Bow Legs"]:
-                pdf.cell(200, 10, txt="- Use bracing if advised by specialist.", ln=True)
-                recommendations_added = True
+        if is_landmark_visible(lm[mp_pose.PoseLandmark.LEFT_KNEE.value]):
+            metrics["knee_z"] = lm[mp_pose.PoseLandmark.LEFT_KNEE.value].z
 
-            if not recommendations_added:
-                 pdf.cell(200, 10, txt="No specific recommendations based on detected issues.", ln=True)
+        if (is_landmark_visible(lm[mp_pose.PoseLandmark.LEFT_HEEL.value]) and 
+            is_landmark_visible(lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX.value])):
+            metrics["foot_z_diff"] = abs(lm[mp_pose.PoseLandmark.LEFT_HEEL.value].z - 
+                                      lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX.value].z)
 
+        if (is_landmark_visible(lm[mp_pose.PoseLandmark.LEFT_ANKLE.value]) and 
+            is_landmark_visible(lm[mp_pose.PoseLandmark.RIGHT_ANKLE.value])):
+            metrics["ankle_x_diff"] = abs(lm[mp_pose.PoseLandmark.LEFT_ANKLE.value].x - 
+                                       lm[mp_pose.PoseLandmark.RIGHT_ANKLE.value].x)
 
-            # Using tempfile to handle PDF in memory for download
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                pdf_output_path = tmp_file.name
-                pdf.output(pdf_output_path)
+        if (is_landmark_visible(lm[mp_pose.PoseLandmark.LEFT_KNEE.value]) and 
+            is_landmark_visible(lm[mp_pose.PoseLandmark.RIGHT_KNEE.value])):
+            metrics["knee_x_diff"] = abs(lm[mp_pose.PoseLandmark.LEFT_KNEE.value].x - 
+                                      lm[mp_pose.PoseLandmark.RIGHT_KNEE.value].x)
 
-            # Provide a download button for the PDF
-            with open(pdf_output_path, "rb") as pdf_file:
+        # Initialize abnormalities with only selected conditions
+        abnormalities = {k: False for k in st.session_state.selected_abnormalities if st.session_state.selected_abnormalities[k]}
+
+        # Only process selected abnormalities
+        if "Kyphosis" in abnormalities:
+            if metrics["shoulder_z"] is not None and metrics["hip_z"] is not None:
+                abnormalities["Kyphosis"] = metrics["shoulder_z"] - metrics["hip_z"] > 0.15
+
+        if "Lordosis" in abnormalities:
+            if metrics["hip_z"] is not None and metrics["knee_z"] is not None:
+                abnormalities["Lordosis"] = metrics["hip_z"] - metrics["knee_z"] > 0.1
+
+        if "Tech Neck" in abnormalities:
+            abnormalities["Tech Neck"] = (neck_angle > 45 and ear_shoulder_distance > 0.15)
+
+        if "Scoliosis" in abnormalities:
+            if metrics["shoulder_y_diff"] is not None:
+                abnormalities["Scoliosis"] = metrics["shoulder_y_diff"] > 0.05
+
+        if "Flat Feet" in abnormalities:
+            if metrics["foot_z_diff"] is not None:
+                abnormalities["Flat Feet"] = metrics["foot_z_diff"] < 0.05
+
+        if "Gait Abnormalities" in abnormalities:
+            if metrics["ankle_x_diff"] is not None:
+                abnormalities["Gait Abnormalities"] = metrics["ankle_x_diff"] > 0.25
+
+        if "Knock Knees" in abnormalities:
+            if metrics["knee_x_diff"] is not None and metrics["ankle_x_diff"] is not None:
+                abnormalities["Knock Knees"] = metrics["knee_x_diff"] < metrics["ankle_x_diff"] * 0.7
+
+        if "Bow Legs" in abnormalities:
+            if metrics["knee_x_diff"] is not None and metrics["ankle_x_diff"] is not None:
+                abnormalities["Bow Legs"] = metrics["ankle_x_diff"] < metrics["knee_x_diff"] * 0.7
+
+        entry = {
+            "Student Name": child_name,
+            "Student ID": f"FN-{random.randint(1000,9999)}",
+            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            **abnormalities,
+            **metrics
+        }
+
+        st.session_state.current_entry = entry
+        st.session_state.abnormalities = abnormalities
+
+        # Add warning for partial visibility
+        visible_parts = [k for k, v in metrics.items() if v is not None]
+        if len(visible_parts) < len(metrics):
+            st.warning("⚠️ Some body parts are not fully visible in the image. Only partial posture analysis is possible.")
+
+# Add Save Button
+if st.session_state.get("current_entry") and st.session_state.get("landmark_image") is not None:
+    st.success("Analysis Complete")
+    st.image(st.session_state.landmark_image, caption="Landmarked Image", use_container_width=True)
+    st.write(f"### Abnormality Detection for {st.session_state.current_entry['Student Name']}:")
+    for condition, present in st.session_state.abnormalities.items():
+        st.markdown(f"- {condition}: {'Yes' if present else 'No'}")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Save Result"):
+            st.session_state.records.append(st.session_state.current_entry)
+            st.success("Result saved successfully!")
+    with col2:
+        if st.button("Generate PDF Report"):
+            try:
+                data = st.session_state.current_entry
+                stored_abnormalities = st.session_state.abnormalities
+                
+                # Create PDF in memory
+                pdf = FPDF()
+                pdf.add_page()
+                
+                # Add logo if available
+                logo_path = next((p for p in [
+                    os.path.join("assets", "logo.jpg"),
+                    os.path.join("assets", "logo.png"),
+                    os.path.join("assets", "logo.JPG"),
+                    os.path.join("assets", "logo.PNG")
+                ] if os.path.exists(p)), None)
+                
+                if logo_path:
+                    pdf.image(logo_path, x=80, y=10, w=50)
+                    pdf.ln(40)  # Reduced from 60 to 40
+                
+                # Add title
+                pdf.set_font("Arial", "B", 16)
+                pdf.cell(0, 8, "Posture Analysis Report", ln=True, align="C")  # Reduced from 10 to 8
+                pdf.ln(5)  # Reduced from 10 to 5
+                
+                # Add student details
+                pdf.set_font("Arial", "B", 12)
+                pdf.cell(0, 8, f"Student Name: {data['Student Name']}", ln=True)  # Reduced from 10 to 8
+                pdf.cell(0, 8, f"Student ID: {data['Student ID']}", ln=True)
+                pdf.cell(0, 8, f"Date: {data['Timestamp']}", ln=True)
+                pdf.ln(5)  # Reduced from 10 to 5
+                
+                # Add landmark image with further reduced size
+                if st.session_state.get("landmark_image") is not None:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_img:
+                        img = st.session_state.landmark_image
+                        if isinstance(img, np.ndarray):
+                            img = Image.fromarray(img)
+                        img.save(tmp_img.name)
+                        pdf.image(tmp_img.name, x=45, y=None, w=110)  # Reduced from 120 to 110
+                    os.unlink(tmp_img.name)
+                pdf.ln(5)  # Reduced from 10 to 5
+                
+                # Add analysis results
+                pdf.set_font("Arial", "B", 14)
+                pdf.cell(0, 8, "Posture Analysis Results:", ln=True)  # Reduced from 10 to 8
+                pdf.ln(3)  # Reduced from 5 to 3
+                
+                pdf.set_font("Arial", "", 12)
+                detected_conditions = []
+                for condition, present in stored_abnormalities.items():
+                    pdf.cell(0, 8, f"- {condition}: {'Present' if present else 'Not Present'}", ln=True)  # Reduced from 10 to 8
+                    if present:
+                        detected_conditions.append(condition)
+                
+                # Add recommendations
+                if detected_conditions:
+                    pdf.ln(5)  # Reduced from 10 to 5
+                    pdf.set_font("Arial", "B", 14)
+                    pdf.cell(0, 8, "Our Recommendations:", ln=True)  # Reduced from 10 to 8
+                    pdf.ln(3)  # Reduced from 5 to 3
+                    
+                    pdf.set_font("Arial", "", 12)
+                    for condition in detected_conditions:
+                        if condition in POSTURE_RECOMMENDATIONS:
+                            pdf.set_font("Arial", "B", 12)
+                            pdf.cell(0, 8, f"Regarding {condition}:", ln=True)  # Reduced from 10 to 8
+                            pdf.set_font("Arial", "", 12)
+                            recommendations = POSTURE_RECOMMENDATIONS[condition]
+                            recommendations_text = " ".join(r.replace("- ", "") for r in recommendations) + "."
+                            pdf.multi_cell(0, 8, recommendations_text)  # Reduced from 10 to 8
+                            pdf.ln(3)  # Reduced from 5 to 3
+                
+                # Add footer with disclaimer and website
+                pdf.ln(5)  # Reduced from 10 to 5
+                footer_y = pdf.get_y()
+                if footer_y < 230:  # Reduced from 250 to 230
+                    pdf.ln(230 - footer_y)
+
+                # Add separator line
+                pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+                pdf.ln(3)  # Reduced from 5 to 3
+
+                # Add disclaimer and website URL
+                pdf.set_font("Arial", "I", 8)
+                disclaimer = (
+                    "Disclaimer: This report is based on an automated analysis and is for informational purposes only. "
+                    "It is not a substitute for professional medical advice, diagnosis, or treatment. "
+                    "Consult with a qualified healthcare provider for any health concerns."
+                )
+                pdf.multi_cell(0, 4, disclaimer, align="C")  # Reduced from 5 to 4
+                
+                # Add website URL right after disclaimer
+                pdf.ln(1)  # Reduced from 2 to 1
+                pdf.set_font("Arial", "", 10)
+                pdf.cell(0, 8, "www.futurenurture.in", ln=True, align="C")  # Reduced from 10 to 8
+                
+                # Save and offer download
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                    pdf_path = tmp_file.name
+                
+                pdf.output(pdf_path)
+                
+                with open(pdf_path, 'rb') as pdf_file:
+                    pdf_bytes = pdf_file.read()
+                
+                os.unlink(pdf_path)
+                
+                st.success("PDF Report Generated!")
                 st.download_button(
-                    label="Download PDF Report",
-                    data=pdf_file,
-                    file_name=f"Posture_Report_{child_name.replace(' ', '_')}.pdf",
+                    label="Download Report PDF",
+                    data=pdf_bytes,
+                    file_name=f"posture_report_{data['Student ID']}.pdf",
                     mime="application/pdf"
                 )
+                
+            except Exception as e:
+                st.error(f"Error generating PDF: {str(e)}")
 
-            # Clean up the temporary file after download (Streamlit handles this well)
-            os.remove(pdf_output_path)
+# --- View Data Table at End ---
+st.markdown("---")
+st.subheader("📊 View Collected Records")
+if st.session_state.records:
+    # Implement pagination for large datasets
+    records_per_page = 10
+    total_pages = len(st.session_state.records) // records_per_page + 1
+    current_page = st.selectbox("Select Page", range(1, total_pages + 1)) - 1
+    
+    start_idx = current_page * records_per_page
+    end_idx = start_idx + records_per_page
+    
+    search_term = st.text_input("🔍 Search by Student Name or ID", key="search")
+    df = pd.DataFrame(st.session_state.records[start_idx:end_idx])
+    if search_term:
+        df = df[df['Student Name'].str.contains(search_term, case=False) | 
+                df['Student ID'].str.contains(search_term, case=False)]
+    st.dataframe(df, use_container_width=True)
+    
+    # Optimize CSV download
+    @st.cache_data
+    def convert_to_csv(df):
+        return df.to_csv(index=False).encode("utf-8")
+    
+    csv = convert_to_csv(df)
+    st.download_button("📥 Download CSV", data=csv, file_name="posture_records.csv", mime="text/csv")
+else:
+    st.info("No records to display yet.")
 
+# Clean up resources when the script ends
+clear_image_memory()
 
+# Center the User Manual Download Button above the footer
+button_col1, button_col2, button_col3 = st.columns([2, 1, 2])
+with button_col2:
+    manual_path = os.path.join("assets", "FitNurture_User_Manual.pdf")
+    if os.path.exists(manual_path):
+        with open(manual_path, "rb") as f:
+            st.download_button(
+                label="Download User Manual (PDF)",
+                data=f,
+                file_name="FitNurture_User_Manual.pdf",
+                mime="application/pdf"
+            )
     else:
-        st.warning("Could not detect pose landmarks in the image. Please ensure the person is clearly visible.")
+        st.warning("User manual PDF not found in assets folder.")
 
+# Add copyright footer
+st.markdown("""
+    <div class="copyright-footer">
+        © Copyright 2025 FutureNurture | <a href="http://www.futurenurture.in" target="_blank">www.futurenurture.in</a>
+    </div>
+""", unsafe_allow_html=True)

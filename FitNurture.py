@@ -43,6 +43,77 @@ st.set_page_config(
     page_icon="🧘‍♀️",
     layout="wide"
 )
+# Add this custom CSS after your existing page config
+st.markdown("""
+    <style>
+    .camera-container {
+        position: relative;
+        width: fit-content;
+        margin: auto;
+    }
+    
+    .posture-guidelines {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+    }
+    
+    /* Center vertical line for body alignment */
+    .center-line {
+        position: absolute;
+        left: 50%;
+        height: 100%;
+        width: 2px;
+        background-color: rgba(0, 255, 0, 0.5);
+    }
+    
+    /* Head alignment box */
+    .head-box {
+        position: absolute;
+        top: 5%;
+        left: 40%;
+        right: 40%;
+        height: 15%;
+        border: 2px dashed rgba(255, 165, 0, 0.7);
+        border-radius: 50%;
+    }
+    
+    /* Body frame */
+    .body-frame {
+        position: absolute;
+        top: 20%;
+        left: 30%;
+        right: 30%;
+        bottom: 5%;
+        border: 2px solid rgba(0, 255, 0, 0.5);
+    }
+    
+    /* Text labels */
+    .guide-label {
+        position: absolute;
+        color: white;
+        background-color: rgba(0, 0, 0, 0.7);
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 12px;
+    }
+    
+    .head-label {
+        top: 2%;
+        left: 50%;
+        transform: translateX(-50%);
+    }
+    
+    .body-label {
+        top: 50%;
+        right: 25%;
+        transform: translateY(-50%);
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
 # --- Custom CSS for Copyright Only ---
 st.markdown("""
@@ -108,94 +179,6 @@ def calculate_angle(a, b, c):
     angle_rad = np.arccos(cosine_angle)
     return np.degrees(angle_rad)
 
-def generate_user_manual_pdf():
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.set_font("Arial", size=14)
-
-    # Add logo if available
-    logo_paths = [
-        os.path.join("assets", "logo.jpg"),
-        os.path.join("assets", "logo.JPG"),
-        os.path.join("assets", "logo.png"),
-        os.path.join("assets", "logo.PNG")
-    ]
-    logo_path = next((p for p in logo_paths if os.path.exists(p)), None)
-    if logo_path:
-        pdf.image(logo_path, x=80, y=10, w=50)
-        pdf.ln(40)
-    else:
-        pdf.ln(20)
-
-    pdf.set_font("Arial", 'B', 18)
-    pdf.cell(0, 10, "FitNurture Posture Detection", ln=True, align='C')
-    pdf.set_font("Arial", size=14)
-    pdf.ln(10)
-    pdf.cell(0, 10, "User Manual", ln=True, align='C')
-    pdf.ln(15)
-
-    pdf.set_font("Arial", 'B', 14)
-    pdf.cell(0, 10, "Step-by-Step Guide", ln=True)
-    pdf.set_font("Arial", size=12)
-    pdf.ln(5)
-
-    steps = [
-        "1. Open the FitNurture app.",
-        "2. Enter the required details (e.g., student name, age, etc.).",
-        "3. Choose your input method: Upload Image or Use Camera.",
-        "4. If uploading, select a clear, full-body image.",
-        "5. If using the camera, follow the camera guidelines below.",
-        "6. Submit the image for posture analysis.",
-        "7. Review the detected posture and any recommendations.",
-        "8. Download the PDF report if needed."
-    ]
-    for step in steps:
-        pdf.multi_cell(0, 8, step)
-    pdf.ln(10)
-
-    pdf.set_font("Arial", 'B', 14)
-    pdf.cell(0, 10, "Camera Guidelines", ln=True)
-    pdf.set_font("Arial", size=12)
-    pdf.ln(5)
-    camera_guidelines = [
-        "- Ensure your head is near the top center of the frame.",
-        "- Stand straight, facing the camera.",
-        "- Make sure your full body is visible in the frame.",
-        "- Align your head between the horizontal guidelines.",
-        "- Keep your body centered between the vertical guidelines.",
-        "- Stand 6-8 feet away from the camera for best results.",
-        "- Use good lighting to improve detection accuracy.",
-        "- Avoid wearing loose or baggy clothing."
-    ]
-    for guide in camera_guidelines:
-        pdf.multi_cell(0, 8, guide)
-    pdf.ln(10)
-
-    pdf.set_font("Arial", 'B', 14)
-    pdf.cell(0, 10, "Tips", ln=True)
-    pdf.set_font("Arial", size=12)
-    pdf.ln(5)
-    tips = [
-        "- Review the captured image before submitting.",
-        "- If the posture is not detected correctly, retake the photo.",
-        "- For best results, use a plain background."
-    ]
-    for tip in tips:
-        pdf.multi_cell(0, 8, tip)
-
-    # Save to a temporary file and offer download in Streamlit
-    import tempfile
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-        pdf.output(tmp_file.name)
-        st.success("User manual generated!")
-        with open(tmp_file.name, "rb") as f:
-            st.download_button(
-                label="Download User Manual (PDF)",
-                data=f,
-                file_name="FitNurture_User_Manual.pdf",
-                mime="application/pdf"
-            )
 
 # --- App Config ---
 @st.cache_resource
@@ -216,6 +199,58 @@ pose_static = load_pose_model()
 for key in ['records', 'current_entry', 'landmark_image', 'abnormalities']:
     if key not in st.session_state:
         st.session_state[key] = [] if key == 'records' else {}
+
+# --- Posture Recommendations ---
+POSTURE_RECOMMENDATIONS = {
+    "Kyphosis": [
+        "- Practice shoulder blade squeezes",
+        "- Strengthen upper back muscles",
+        "- Maintain proper sitting posture",
+        "- Consider physical therapy exercises"
+    ],
+    "Lordosis": [
+        "- Core strengthening exercises",
+        "- Hip flexor stretches",
+        "- Pelvic tilt exercises",
+        "- Regular posture checks"
+    ],
+    "Tech Neck": [
+        "- Adjust device height to eye level",
+        "- Take regular breaks from screens",
+        "- Neck strengthening exercises",
+        "- Practice chin tucks"
+    ],
+    "Scoliosis": [
+        "- Consult with a spine specialist",
+        "- Core strengthening exercises",
+        "- Swimming or water therapy",
+        "- Regular monitoring"
+    ],
+    "Flat Feet": [
+        "- Use arch support insoles",
+        "- Foot strengthening exercises",
+        "- Proper footwear selection",
+        "- Consider physical therapy"
+    ],
+    "Gait Abnormalities": [
+        "- Gait analysis with a specialist",
+        "- Balance exercises",
+        "- Proper footwear",
+        "- Regular walking practice"
+    ],
+    "Knock Knees": [
+        "- Strengthening exercises for legs",
+        "- Balance training",
+        "- Proper footwear",
+        "- Regular monitoring"
+    ],
+    "Bow Legs": [
+        "- Consult with an orthopedic specialist",
+        "- Strengthening exercises",
+        "- Balance training",
+        "- Regular monitoring"
+    ]
+}
 
 # --- Input Form and Image Processing ---
 container = st.container()
@@ -276,31 +311,45 @@ with container:
                 )
         
         st.markdown("---")
-        input_mode = st.radio("Choose Input Mode", ["Upload Image", "Use Camera (Recommended for Mobile)"])
 
-        image_data = None
+# Store the input mode in session state to track changes
+if 'previous_mode' not in st.session_state:
+    st.session_state.previous_mode = None
 
-        # Clear the other input type when switching modes
-        if input_mode == "Upload Image":
-            if "camera" in st.session_state:
-                del st.session_state["camera"]
-                clear_image_memory()
-            uploaded_file = st.file_uploader("Upload an image", type=["jpg", "png", "jpeg"])
-            if uploaded_file:
-                image_data = Image.open(uploaded_file)
-                image_data = optimize_image(image_data)  # Optimize uploaded image
-        else:  # Camera mode
-            if "upload" in st.session_state:
-                del st.session_state["upload"]
-                clear_image_memory()
-            camera_data = st.camera_input("Take a picture using device")
-            if camera_data:
-                file_bytes = np.asarray(bytearray(camera_data.read()), dtype=np.uint8)
-                frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-                if frame is not None:
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    image_data = Image.fromarray(frame_rgb)
-                    image_data = optimize_image(image_data)  # Optimize camera image
+input_mode = st.radio("Choose Input Mode", ["Upload Image", "Use Camera (Recommended for Mobile)"])
+image_data = None
+
+# Handle mode switching and camera cleanup
+if st.session_state.previous_mode != input_mode:
+    st.session_state.previous_mode = input_mode
+    # Clear any existing camera session
+    if "camera" in st.session_state:
+        del st.session_state["camera"]
+    if "camera_data" in st.session_state:
+        del st.session_state["camera_data"]
+    clear_image_memory()
+    st.rerun()
+
+# Handle different input modes
+if input_mode == "Upload Image":
+    uploaded_file = st.file_uploader("Upload an image", type=["jpg", "png", "jpeg"])
+    if uploaded_file:
+        image_data = Image.open(uploaded_file)
+        image_data = optimize_image(image_data)
+
+else:  # Camera mode
+    if "upload" in st.session_state:
+        del st.session_state["upload"]
+        clear_image_memory()
+    
+    camera_data = st.camera_input("Take a picture using device", key="camera_data")
+    if camera_data:
+        file_bytes = np.asarray(bytearray(camera_data.read()), dtype=np.uint8)
+        frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        if frame is not None:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            image_data = Image.fromarray(frame_rgb)
+            image_data = optimize_image(image_data)
 
 # Process image if available and name is provided
 if image_data and child_name:
@@ -464,44 +513,126 @@ if st.session_state.get("current_entry") and st.session_state.get("landmark_imag
         if st.button("Save Result"):
             st.session_state.records.append(st.session_state.current_entry)
             st.success("Result saved successfully!")
-    
     with col2:
         if st.button("Generate PDF Report"):
-            data = st.session_state.current_entry
-            stored_abnormalities = st.session_state.abnormalities
-            pdf = FPDF()
-            pdf.add_page()
-            pdf.set_font("Arial", size=12)
-            pdf.cell(200, 10, txt=f"Posture Analysis Report for {data['Student Name']}", ln=True, align='C')
-            pdf.ln(10)
-            pdf.cell(200, 10, txt="Detected Issues:", ln=True)
-            for condition in stored_abnormalities:
-                value = "Yes" if data.get(condition) else "No"
-                pdf.cell(200, 10, txt=f"- {condition}: {value}", ln=True)
-            pdf.ln(10)
-            pdf.cell(200, 10, txt="Recommendations:", ln=True)
-            if data.get("Kyphosis"):
-                pdf.cell(200, 10, txt="- Strengthen upper back and stretch chest muscles.", ln=True)
-            if data.get("Lordosis"):
-                pdf.cell(200, 10, txt="- Strengthen core and hamstrings.", ln=True)
-            if data.get("Tech Neck"):
-                pdf.cell(200, 10, txt="- Reduce screen time, raise device height.", ln=True)
-            if data.get("Scoliosis"):
-                pdf.cell(200, 10, txt="- Seek professional orthopedic assessment.", ln=True)
-            if data.get("Flat Feet"):
-                pdf.cell(200, 10, txt="- Use orthotic insoles or see podiatrist.", ln=True)
-            if data.get("Gait Abnormalities"):
-                pdf.cell(200, 10, txt="- Consult physiotherapist for gait correction.", ln=True)
-            if data.get("Knock Knees"):
-                pdf.cell(200, 10, txt="- Strengthen outer thigh and hip muscles.", ln=True)
-            if data.get("Bow Legs"):
-                pdf.cell(200, 10, txt="- Use bracing if advised by specialist.", ln=True)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                pdf_output_path = tmp_file.name
-                pdf.output(pdf_output_path)
-            with open(pdf_output_path, "rb") as pdf_file:
-                st.download_button("Download PDF Report", pdf_file, file_name=f"Posture_Report_{data['Student Name'].replace(' ', '_')}.pdf", mime="application/pdf")
-            os.remove(pdf_output_path)
+            try:
+                data = st.session_state.current_entry
+                stored_abnormalities = st.session_state.abnormalities
+                
+                # Create PDF in memory
+                pdf = FPDF()
+                pdf.add_page()
+                
+                # Add logo if available
+                logo_path = next((p for p in [
+                    os.path.join("assets", "logo.jpg"),
+                    os.path.join("assets", "logo.png"),
+                    os.path.join("assets", "logo.JPG"),
+                    os.path.join("assets", "logo.PNG")
+                ] if os.path.exists(p)), None)
+                
+                if logo_path:
+                    pdf.image(logo_path, x=80, y=10, w=50)
+                    pdf.ln(40)  # Reduced from 60 to 40
+                
+                # Add title
+                pdf.set_font("Arial", "B", 16)
+                pdf.cell(0, 8, "Posture Analysis Report", ln=True, align="C")  # Reduced from 10 to 8
+                pdf.ln(5)  # Reduced from 10 to 5
+                
+                # Add student details
+                pdf.set_font("Arial", "B", 12)
+                pdf.cell(0, 8, f"Student Name: {data['Student Name']}", ln=True)  # Reduced from 10 to 8
+                pdf.cell(0, 8, f"Student ID: {data['Student ID']}", ln=True)
+                pdf.cell(0, 8, f"Date: {data['Timestamp']}", ln=True)
+                pdf.ln(5)  # Reduced from 10 to 5
+                
+                # Add landmark image with further reduced size
+                if st.session_state.get("landmark_image") is not None:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_img:
+                        img = st.session_state.landmark_image
+                        if isinstance(img, np.ndarray):
+                            img = Image.fromarray(img)
+                        img.save(tmp_img.name)
+                        pdf.image(tmp_img.name, x=45, y=None, w=110)  # Reduced from 120 to 110
+                    os.unlink(tmp_img.name)
+                pdf.ln(5)  # Reduced from 10 to 5
+                
+                # Add analysis results
+                pdf.set_font("Arial", "B", 14)
+                pdf.cell(0, 8, "Posture Analysis Results:", ln=True)  # Reduced from 10 to 8
+                pdf.ln(3)  # Reduced from 5 to 3
+                
+                pdf.set_font("Arial", "", 12)
+                detected_conditions = []
+                for condition, present in stored_abnormalities.items():
+                    pdf.cell(0, 8, f"- {condition}: {'Present' if present else 'Not Present'}", ln=True)  # Reduced from 10 to 8
+                    if present:
+                        detected_conditions.append(condition)
+                
+                # Add recommendations
+                if detected_conditions:
+                    pdf.ln(5)  # Reduced from 10 to 5
+                    pdf.set_font("Arial", "B", 14)
+                    pdf.cell(0, 8, "Our Recommendations:", ln=True)  # Reduced from 10 to 8
+                    pdf.ln(3)  # Reduced from 5 to 3
+                    
+                    pdf.set_font("Arial", "", 12)
+                    for condition in detected_conditions:
+                        if condition in POSTURE_RECOMMENDATIONS:
+                            pdf.set_font("Arial", "B", 12)
+                            pdf.cell(0, 8, f"Regarding {condition}:", ln=True)  # Reduced from 10 to 8
+                            pdf.set_font("Arial", "", 12)
+                            recommendations = POSTURE_RECOMMENDATIONS[condition]
+                            recommendations_text = " ".join(r.replace("- ", "") for r in recommendations) + "."
+                            pdf.multi_cell(0, 8, recommendations_text)  # Reduced from 10 to 8
+                            pdf.ln(3)  # Reduced from 5 to 3
+                
+                # Add footer with disclaimer and website
+                pdf.ln(5)  # Reduced from 10 to 5
+                footer_y = pdf.get_y()
+                if footer_y < 230:  # Reduced from 250 to 230
+                    pdf.ln(230 - footer_y)
+
+                # Add separator line
+                pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+                pdf.ln(3)  # Reduced from 5 to 3
+
+                # Add disclaimer and website URL
+                pdf.set_font("Arial", "I", 8)
+                disclaimer = (
+                    "Disclaimer: This report is based on an automated analysis and is for informational purposes only. "
+                    "It is not a substitute for professional medical advice, diagnosis, or treatment. "
+                    "Consult with a qualified healthcare provider for any health concerns."
+                )
+                pdf.multi_cell(0, 4, disclaimer, align="C")  # Reduced from 5 to 4
+                
+                # Add website URL right after disclaimer
+                pdf.ln(1)  # Reduced from 2 to 1
+                pdf.set_font("Arial", "", 10)
+                pdf.cell(0, 8, "www.futurenurture.in", ln=True, align="C")  # Reduced from 10 to 8
+                
+                # Save and offer download
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                    pdf_path = tmp_file.name
+                
+                pdf.output(pdf_path)
+                
+                with open(pdf_path, 'rb') as pdf_file:
+                    pdf_bytes = pdf_file.read()
+                
+                os.unlink(pdf_path)
+                
+                st.success("PDF Report Generated!")
+                st.download_button(
+                    label="Download Report PDF",
+                    data=pdf_bytes,
+                    file_name=f"posture_report_{data['Student ID']}.pdf",
+                    mime="application/pdf"
+                )
+                
+            except Exception as e:
+                st.error(f"Error generating PDF: {str(e)}")
 
 # --- View Data Table at End ---
 st.markdown("---")
