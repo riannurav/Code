@@ -573,9 +573,21 @@ if st.session_state.get("current_entry") and st.session_state.get("landmark_imag
                 pdf.multi_cell(0, 3.5, disclaimer_text, align="C") 
                 
                 # Output PDF
-                pdf_output_data = pdf.output(dest='S') 
-                # The error indicates pdf_output_data is bytearray, so convert to bytes
-                pdf_bytes_out = bytes(pdf_output_data)
+                pdf_output_data = pdf.output(dest='S') # Original fpdf returns string or bytearray
+                if isinstance(pdf_output_data, str):
+                    # If it's a string (older fpdf or specific configuration), encode it
+                    pdf_bytes_out = pdf_output_data.encode('latin-1')
+                elif isinstance(pdf_output_data, bytearray):
+                    # If it's a bytearray (as the error indicated), convert to bytes
+                    pdf_bytes_out = bytes(pdf_output_data)
+                elif isinstance(pdf_output_data, bytes):
+                    # If it's already bytes (fpdf2 behavior), use as is
+                    pdf_bytes_out = pdf_output_data
+                else:
+                    # Fallback or error if unexpected type
+                    st.error(f"Unexpected PDF output type: {type(pdf_output_data)}")
+                    pdf_bytes_out = b""
+
 
                 if not pdf_bytes_out: 
                     st.error("Critical PDF Error: Output from FPDF is empty or None. No PDF data generated.")
