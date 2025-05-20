@@ -1,8 +1,17 @@
 import streamlit as st
+
+# --- Page Config ---
+# This MUST be the first Streamlit command in your script.
+st.set_page_config(
+    page_title="FitNurture : Posture Detection",
+    page_icon="🧘‍♀️",
+    layout="wide"
+)
+
 import cv2
 import numpy as np
 import mediapipe as mp
-from fpdf import FPDF # fpdf2 is the library, but it's imported as FPDF
+from fpdf import FPDF # Using fpdf as per user's working history
 from PIL import Image
 import tempfile
 import os
@@ -11,6 +20,8 @@ import pandas as pd
 from datetime import datetime
 import gc  # Import garbage collector
 import pyodbc # Added for Azure SQL connection
+import traceback # Added for PDF error debugging
+
 
 # --- Memory Management Functions ---
 def clear_image_memory():
@@ -30,24 +41,18 @@ def optimize_image(image, max_size=800):
     else:
         img = image
     
-    if img.size[0] == 0 or img.size[1] == 0: # Prevent division by zero if image is empty
-        return Image.new('RGB', (100,100), color = 'lightgray') # Return a placeholder or original
+    if img.size[0] == 0 or img.size[1] == 0: 
+        return Image.new('RGB', (100,100), color = 'lightgray') 
 
-    # Calculate new size maintaining aspect ratio
     if max(img.size) > 0 : 
         ratio = max_size / max(img.size)
-        if ratio < 1:  # Only resize if image is larger than max_size
+        if ratio < 1:  
             new_size = tuple(int(dim * ratio) for dim in img.size)
             img = img.resize(new_size, Image.LANCZOS) 
     
     return img
 
-# --- Page Config ---
-st.set_page_config(
-    page_title="FitNurture : Posture Detection",
-    page_icon="🧘‍♀️",
-    layout="wide"
-)
+
 # Add this custom CSS after your existing page config
 st.markdown("""
     <style>
@@ -56,90 +61,24 @@ st.markdown("""
         width: fit-content;
         margin: auto;
     }
-    
-    .posture-guidelines {
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        pointer-events: none;
+    /* ... (rest of CSS remains the same) ... */
+    .copyright-footer {
+        text-align: center;
+        padding: 20px 0;
+        margin-top: 30px;
+        border-top: 1px solid #e5e5e5;
+        color: #666;
+        font-size: 14px;
     }
-    
-    /* Center vertical line for body alignment */
-    .center-line {
-        position: absolute;
-        left: 50%;
-        height: 100%;
-        width: 2px;
-        background-color: rgba(0, 255, 0, 0.5);
+    .copyright-footer a {
+        color: #666;
+        text-decoration: none;
     }
-    
-    /* Head alignment box */
-    .head-box {
-        position: absolute;
-        top: 5%;
-        left: 40%;
-        right: 40%;
-        height: 15%;
-        border: 2px dashed rgba(255, 165, 0, 0.7);
-        border-radius: 50%;
-    }
-    
-    /* Body frame */
-    .body-frame {
-        position: absolute;
-        top: 20%;
-        left: 30%;
-        right: 30%;
-        bottom: 5%;
-        border: 2px solid rgba(0, 255, 0, 0.5);
-    }
-    
-    /* Text labels */
-    .guide-label {
-        position: absolute;
-        color: white;
-        background-color: rgba(0, 0, 0, 0.7);
-        padding: 4px 8px;
-        border-radius: 4px;
-        font-size: 12px;
-    }
-    
-    .head-label {
-        top: 2%;
-        left: 50%;
-        transform: translateX(-50%);
-    }
-    
-    .body-label {
-        top: 50%;
-        right: 25%;
-        transform: translateY(-50%);
+    .copyright-footer a:hover {
+        text-decoration: underline;
     }
     </style>
     """, unsafe_allow_html=True)
-
-# --- Custom CSS for Copyright Only ---
-st.markdown("""
-    <style>
-        .copyright-footer {
-            text-align: center;
-            padding: 20px 0;
-            margin-top: 30px;
-            border-top: 1px solid #e5e5e5;
-            color: #666;
-            font-size: 14px;
-        }
-        .copyright-footer a {
-            color: #666;
-            text-decoration: none;
-        }
-        .copyright-footer a:hover {
-            text-decoration: underline;
-        }
-    </style>
-""", unsafe_allow_html=True)
 
 # --- Logo and Title Section ---
 st.markdown("<h2 style='text-align: center; font-size: 24px; margin-bottom: 20px;'>FitNurture : Posture Detection</h2>", unsafe_allow_html=True)
@@ -220,14 +159,23 @@ POSTURE_RECOMMENDATIONS = {
 }
 
 # --- Database Connection and Upload Functions ---
+# ... (Database functions remain the same as previous correct version) ...
 def get_db_connection():
     try:
         secrets = {k: st.secrets.get(k) for k in ["DB_DRIVER", "DB_SERVER", "DB_NAME", "DB_UID", "DB_PWD"]}
-        if not all(secrets.values()):
-            st.error("⚠️ Database credentials are not fully configured in secrets.")
+        missing_secrets = []
+        if not secrets.get("DB_SERVER"): missing_secrets.append("DB_SERVER")
+        if not secrets.get("DB_NAME"): missing_secrets.append("DB_NAME")
+        if not secrets.get("DB_UID"): missing_secrets.append("DB_UID")
+        if not secrets.get("DB_PWD"): missing_secrets.append("DB_PWD")
+
+        if missing_secrets:
+            st.error(f"⚠️ Database credentials missing in secrets: {', '.join(missing_secrets)}. Please configure them in Streamlit Cloud settings.")
             return None
-        secrets["DB_DRIVER"] = secrets.get("DB_DRIVER") or "{ODBC Driver 18 for SQL Server}"
-        conn_str = f"DRIVER={secrets['DB_DRIVER']};SERVER={secrets['DB_SERVER']};DATABASE={secrets['DB_NAME']};UID={secrets['DB_UID']};PWD={secrets['DB_PWD']};Encrypt=yes;TrustServerCertificate=no;ConnectionTimeout=30;"
+        
+        db_driver = secrets.get("DB_DRIVER") or "{ODBC Driver 17 for SQL Server}" 
+        
+        conn_str = f"DRIVER={db_driver};SERVER={secrets['DB_SERVER']};DATABASE={secrets['DB_NAME']};UID={secrets['DB_UID']};PWD={secrets['DB_PWD']};Encrypt=yes;TrustServerCertificate=no;ConnectionTimeout=30;"
         return pyodbc.connect(conn_str)
     except pyodbc.Error as ex:
         st.error(f"⚠️ Database Connection Error: {ex.args[0]}. Check configuration.")
@@ -241,16 +189,13 @@ def create_table_if_not_exists(conn):
     cursor = conn.cursor()
     table_name = "PostureRecords"
     
-    # Define Student_ID as PRIMARY KEY
-    # All other columns are defined here. Student_ID is first for clarity as PK.
     column_definitions_dict = {
         "Student_ID": "NVARCHAR(50) NOT NULL PRIMARY KEY",
         "Student_Name": "NVARCHAR(255) NULL",
-        "Observation_Timestamp": "DATETIME2 NULL", # Changed from Timestamp to avoid SQL keyword conflict
+        "Observation_Timestamp": "DATETIME2 NULL", 
         "UploadTimestamp": "DATETIME2 DEFAULT GETDATE() NULL" 
     }
 
-    # Add abnormalities and metrics columns
     for key in POSTURE_RECOMMENDATIONS.keys():
         column_definitions_dict[key.replace(' ', '_').replace('-', '_')] = "BIT NULL"
     
@@ -258,7 +203,6 @@ def create_table_if_not_exists(conn):
     for key in metrics_base_keys:
         column_definitions_dict[key] = "FLOAT NULL"
 
-    # Construct column definitions string
     cols_sql_definitions = [f"[{name}] {typedef}" for name, typedef in column_definitions_dict.items()]
     
     join_separator = ",\n        "
@@ -286,15 +230,9 @@ def upload_records_to_sql(conn, records_to_upload):
     cursor = conn.cursor()
     table_name = "PostureRecords"
 
-    # Define the order of columns for INSERT and UPDATE
-    # Start with Student_ID, then other fields. UploadTimestamp is handled by DB default.
-    ordered_py_keys = ["Student ID", "Student Name", "Timestamp"] # Python dict keys
-    
-    # SQL column names corresponding to ordered_py_keys
-    # Observation_Timestamp for "Timestamp" to avoid SQL keyword conflict
+    ordered_py_keys = ["Student ID", "Student Name", "Timestamp"] 
     sql_cols_for_std_fields = ["Student_ID", "Student_Name", "Observation_Timestamp"] 
-
-    all_sql_cols = list(sql_cols_for_std_fields) # Start with standard fields
+    all_sql_cols = list(sql_cols_for_std_fields) 
 
     abnormality_sql_cols = [k.replace(' ', '_').replace('-', '_') for k in POSTURE_RECOMMENDATIONS.keys()]
     all_sql_cols.extend(abnormality_sql_cols)
@@ -302,31 +240,27 @@ def upload_records_to_sql(conn, records_to_upload):
     metrics_sql_cols = ["shoulder_z", "hip_z", "knee_z", "neck_angle", "ear_shoulder_distance", "shoulder_y_diff", "foot_z_diff", "ankle_x_diff", "knee_x_diff"]
     all_sql_cols.extend(metrics_sql_cols)
 
-    # For INSERT:
     insert_cols_str = ", ".join([f"[{col}]" for col in all_sql_cols])
     placeholders = ", ".join(["?" for _ in all_sql_cols])
     insert_sql = f"INSERT INTO {table_name} ({insert_cols_str}) VALUES ({placeholders})"
 
-    # For UPDATE (all columns except Student_ID in SET, Student_ID in WHERE):
     update_set_clauses = [f"[{col}] = ?" for col in all_sql_cols if col != "Student_ID"]
-    update_sql = f"UPDATE {table_name} SET {', '.join(update_set_clauses)} WHERE [Student_ID] = ?"
+    # Also update UploadTimestamp when updating a record
+    update_sql = f"UPDATE {table_name} SET {', '.join(update_set_clauses)}, [UploadTimestamp] = GETDATE() WHERE [Student_ID] = ?"
+
 
     insert_count = 0
     update_count = 0
     error_count = 0
 
     for record in records_to_upload:
-        # Prepare values for INSERT in the correct order
         values_for_insert = []
-        # Standard fields
         values_for_insert.append(record.get("Student ID"))
         values_for_insert.append(record.get("Student Name"))
-        values_for_insert.append(record.get("Timestamp")) # This is Observation_Timestamp
-        # Abnormalities
-        for key in POSTURE_RECOMMENDATIONS.keys(): # Ensure order matches abnormality_sql_cols
+        values_for_insert.append(record.get("Timestamp")) 
+        for key in POSTURE_RECOMMENDATIONS.keys(): 
             values_for_insert.append(bool(record.get(key)) if record.get(key) is not None else None)
-        # Metrics
-        for key in metrics_sql_cols: # Ensure order matches metrics_sql_cols
+        for key in metrics_sql_cols: 
             values_for_insert.append(float(record.get(key)) if record.get(key) is not None else None)
         
         student_id_val = record.get("Student ID")
@@ -339,21 +273,19 @@ def upload_records_to_sql(conn, records_to_upload):
             cursor.execute(insert_sql, tuple(values_for_insert))
             insert_count += 1
         except pyodbc.IntegrityError as e:
-            # Check if it's a primary key violation (error code 2627 for SQL Server)
-            if '2627' in str(e) or 'PRIMARY KEY constraint' in str(e).upper() or 'unique constraint' in str(e).upper() : # More robust check
-                # Prepare values for UPDATE: all values for SET, then Student_ID for WHERE
-                values_for_update_set = values_for_insert[1:] # All values except Student_ID
-                values_for_update = tuple(values_for_update_set + [student_id_val])
+            if '2627' in str(e) or 'PRIMARY KEY constraint' in str(e).upper() or 'unique constraint' in str(e).upper() : 
+                values_for_update_set = values_for_insert[1:] # All values except Student_ID for SET clause
+                values_for_update = tuple(values_for_update_set + [student_id_val]) # Add Student_ID for WHERE clause
                 try:
                     cursor.execute(update_sql, values_for_update)
                     update_count += 1
                 except pyodbc.Error as ue:
                     st.error(f"⚠️ Error updating record for Student ID '{student_id_val}': {ue}")
                     error_count += 1; conn.rollback()
-            else: # Other integrity error
+            else: 
                 st.error(f"⚠️ Database Integrity Error for Student ID '{student_id_val}': {e}")
                 error_count += 1; conn.rollback()
-        except pyodbc.Error as e: # Other pyodbc error during insert
+        except pyodbc.Error as e: 
             st.error(f"⚠️ Database Error inserting record for Student ID '{student_id_val}': {e}")
             error_count += 1; conn.rollback()
         except Exception as ex_generic:
@@ -370,11 +302,12 @@ def upload_records_to_sql(conn, records_to_upload):
             st.error(f"⚠️ Database commit error: {e}. Records were not saved.")
     elif error_count > 0:
         st.warning(f"{error_count} record(s) encountered errors. Any successful operations in this batch were rolled back.")
-        conn.rollback() # Ensure rollback if any error occurred
+        conn.rollback() 
     
     cursor.close()
 
 # --- Input Form and Image Processing ---
+# ... (Input form and image processing remains the same) ...
 container = st.container()
 with container:
     col1_form, col2_form, col3_form = st.columns([1,2,1]) 
@@ -453,11 +386,12 @@ if image_data and child_name:
         message_placeholder.error("⚠️ No person detected or pose landmarks found. Ensure full body visibility, good lighting, and clear image.")
     else:
         message_placeholder.empty(); lm = results.pose_landmarks.landmark
-        img_with_landmarks = add_landmark_labels(cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR), results.pose_landmarks) # Pass BGR to add_landmark_labels if it expects BGR
-        mp_drawing.draw_landmarks(img_with_landmarks, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
+        img_bgr_with_landmarks = cv2.cvtColor(img_np.copy(), cv2.COLOR_RGB2BGR) 
+        mp_drawing.draw_landmarks(img_bgr_with_landmarks, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
             mp_drawing.DrawingSpec(color=(0,255,0), thickness=2, circle_radius=2),
             mp_drawing.DrawingSpec(color=(255,0,0), thickness=2, circle_radius=2))
-        st.session_state.landmark_image = Image.fromarray(cv2.cvtColor(img_with_landmarks, cv2.COLOR_BGR2RGB))
+        img_bgr_with_landmarks = add_landmark_labels(img_bgr_with_landmarks, results.pose_landmarks) 
+        st.session_state.landmark_image = Image.fromarray(cv2.cvtColor(img_bgr_with_landmarks, cv2.COLOR_BGR2RGB)) 
 
         def is_visible(le): return lm[le.value].visibility > 0.5 if le.value < len(lm) else False
         
@@ -494,10 +428,10 @@ if image_data and child_name:
         if "Knock Knees" in current_abnormalities and all(check_metric(m) for m in ["knee_x_diff", "ankle_x_diff"]) and metrics["ankle_x_diff"] != 0: current_abnormalities["Knock Knees"] = metrics["knee_x_diff"] < metrics["ankle_x_diff"] * 0.7
         if "Bow Legs" in current_abnormalities and all(check_metric(m) for m in ["knee_x_diff", "ankle_x_diff"]) and metrics["knee_x_diff"] != 0: current_abnormalities["Bow Legs"] = metrics["ankle_x_diff"] < metrics["knee_x_diff"] * 0.7
         
-        # Ensure Student ID is generated here if not already, or allow user input
-        student_id = f"FN-{random.randint(1000,9999)}" # This will be unique per analysis run
-        # If you want user to input Student ID, replace above with:
-        # student_id = st.text_input("Enter Student ID (or leave blank for auto-generation)", key="student_id_input") or f"FN-{random.randint(1000,9999)}"
+        student_id = st.session_state.get("current_student_id")
+        if not student_id: 
+            student_id = f"FN-{random.randint(1000,9999)}"
+            st.session_state.current_student_id = student_id 
 
 
         entry = {"Student ID": student_id, "Student Name": child_name, "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), **current_abnormalities, **metrics}
@@ -524,47 +458,143 @@ if st.session_state.get("current_entry") and st.session_state.get("landmark_imag
         if st.button("💾 Save Result Locally", key="save_result_button"):
             st.session_state.records.append(st.session_state.current_entry)
             st.success(f"Result for {st.session_state.current_entry['Student ID']} saved locally!")
+            if 'current_student_id' in st.session_state:
+                del st.session_state['current_student_id']
+
     with col2_actions:
         if st.button("📄 Generate PDF Report", key="generate_pdf_button"):
             try:
-                data_pdf, abn_pdf = st.session_state.current_entry, st.session_state.abnormalities
-                pdf = FPDF(); pdf.add_page()
+                data_pdf = st.session_state.current_entry
+                abn_pdf = st.session_state.abnormalities
+                
+                pdf = FPDF()
+                pdf.add_page()
+                pdf.set_auto_page_break(auto=True, margin=15) 
+
+                # --- Header ---
+                pdf.set_font("Arial", "B", 16)
+                pdf.cell(0, 10, "FitNurture Posture Analysis Report", ln=1, align="C")
+                
+                pdf.set_font("Arial", "", 9) 
+                pdf.cell(0, 7, "www.futurenurture.in", ln=1, align="C", link="http://www.futurenurture.in")
+                pdf.ln(5) 
+
+                # --- Logo ---
+                current_y_logo = pdf.get_y()
                 logo_pdf_path = next((p for p in logo_paths if os.path.exists(p)), None)
-                if logo_pdf_path: pdf.image(logo_pdf_path, x=80, y=10, w=50); pdf.ln(55)
+                if logo_pdf_path:
+                    logo_width_pdf = 35 
+                    logo_height_pdf = 17.5 # Assuming a 2:1 aspect ratio for a typical logo
+                    if current_y_logo + logo_height_pdf > pdf.page_break_trigger - 5: 
+                        pdf.add_page()
+                        current_y_logo = pdf.get_y() 
+                    pdf.image(logo_pdf_path, x=(210-logo_width_pdf)/2, y=current_y_logo, w=logo_width_pdf) 
+                    pdf.set_y(current_y_logo + logo_height_pdf + 5) 
+                
+                # --- Student Details ---
                 pdf.set_font("Arial", "B", 12)
-                for k_pdf, v_pdf in {"Student Name": data_pdf.get('Student Name'), "Student ID": data_pdf.get('Student ID'), "Date": data_pdf.get('Timestamp')}.items():
-                    pdf.cell(0, 6, f"{k_pdf}: {v_pdf or 'N/A'}", ln=True)
-                pdf.ln(3)
+                details = {
+                    "Student Name": data_pdf.get('Student Name'), 
+                    "Student ID": data_pdf.get('Student ID'), 
+                    "Timestamp": data_pdf.get('Timestamp')
+                }
+                for k_pdf, v_pdf in details.items():
+                    pdf.cell(0, 7, f"{k_pdf}: {v_pdf or 'N/A'}", ln=1)
+                pdf.ln(5)
+
+                # --- Landmarked Image ---
                 if st.session_state.get("landmark_image"):
+                    pil_image = st.session_state.landmark_image 
+                    
+                    page_width = pdf.w - pdf.l_margin - pdf.r_margin # Use FPDF's internal page width
+                    max_image_height_pdf = 80 
+                    
+                    original_w_px, original_h_px = pil_image.size
+                    aspect_ratio = original_h_px / original_w_px if original_w_px > 0 else 1
+
+                    img_w_pdf = page_width * 0.70 
+                    img_h_pdf = img_w_pdf * aspect_ratio
+
+                    if img_h_pdf > max_image_height_pdf:
+                        img_h_pdf = max_image_height_pdf
+                        img_w_pdf = img_h_pdf / aspect_ratio if aspect_ratio > 0 else max_image_height_pdf
+
+                    current_y_img = pdf.get_y()
+                    if current_y_img + img_h_pdf > pdf.page_break_trigger - 5: # Check against page break trigger
+                        pdf.add_page()
+                        current_y_img = pdf.get_y()
+
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_img_f:
-                        st.session_state.landmark_image.save(tmp_img_f.name, format="JPEG")
-                        pdf.image(tmp_img_f.name, x=50, y=None, w=100)
+                        pil_image.save(tmp_img_f.name, format="JPEG")
+                        img_x_pos = (pdf.w - img_w_pdf) / 2 # Center image based on FPDF's page width
+                        pdf.image(tmp_img_f.name, x=img_x_pos, y=current_y_img, w=img_w_pdf, h=img_h_pdf)
                     os.unlink(tmp_img_f.name)
-                pdf.ln(3); pdf.set_font("Arial", "B", 14); pdf.cell(0, 8, "Posture Analysis Results:", ln=True); pdf.ln(3)
-                pdf.set_font("Arial", "", 12); detected_cond_pdf = []
-                for cond, pres in abn_pdf.items():
-                    pdf.cell(0, 8, f"- {cond}: {'Present' if pres else 'Not Present'}", ln=True)
-                    if pres: detected_cond_pdf.append(cond)
+                    pdf.set_y(current_y_img + img_h_pdf + 5) 
+                pdf.ln(3)
+
+                # --- Results ---
+                pdf.set_font("Arial", "B", 11) 
+                pdf.cell(0, 7, "Detected Postural Issues:", ln=1) 
+                pdf.set_font("Arial", "", 9) 
+                detected_cond_pdf = []
+                if abn_pdf: 
+                    for cond, pres in abn_pdf.items():
+                        pdf.cell(0, 5, f"- {cond}: {'Present' if pres else 'Not Present'}", ln=1) 
+                        if pres: detected_cond_pdf.append(cond)
+                else:
+                    pdf.cell(0,5, "- No abnormalities selected for detection or none found.", ln=1)
+                pdf.ln(2) 
+
+                # --- Recommendations ---
                 if detected_cond_pdf:
-                    pdf.ln(5); pdf.set_font("Arial", "B", 14); pdf.cell(0, 8, "Our Recommendations:", ln=True); pdf.ln(3)
-                    pdf.set_font("Arial", "", 12)
+                    pdf.set_font("Arial", "B", 11) 
+                    pdf.cell(0, 7, "General Recommendations:", ln=1) 
+                    pdf.set_font("Arial", "", 9) 
+                    available_width = pdf.w - pdf.l_margin - pdf.r_margin - 5 # Subtract a bit for potential indent
                     for cond in detected_cond_pdf:
                         if cond in POSTURE_RECOMMENDATIONS:
-                            pdf.set_font("Arial", "B", 12); pdf.cell(0, 8, f"Regarding {cond}:", ln=True)
-                            pdf.set_font("Arial", "", 12)
-                            for rec_item in POSTURE_RECOMMENDATIONS[cond]: pdf.multi_cell(0, 6, rec_item, ln=True)
-                            pdf.ln(3)
-                pdf.ln(5); pdf.set_y(max(pdf.get_y(), 230) if pdf.get_y() < 230 else pdf.get_y()) # Ensure footer is near bottom or content pushes it
-                pdf.line(10, pdf.get_y(), 200, pdf.get_y()); pdf.ln(3)
-                pdf.set_font("Arial", "I", 8); disclaimer_text = "Disclaimer: This report is based on an automated analysis and is for informational purposes only. It is not a substitute for professional medical advice, diagnosis, or treatment. Consult with a qualified healthcare provider for any health concerns."
-                pdf.multi_cell(0, 4, disclaimer_text, align="C")
-                pdf.ln(1); pdf.set_font("Arial", "", 10); pdf.cell(0, 8, "www.futurenurture.in", ln=True, align="C", link="http://www.futurenurture.in")
-                pdf_bytes_out = pdf.output(dest='S').encode('latin1')
-                st.success("PDF Report Generated!")
-                st.download_button(label="📥 Download Report PDF", data=pdf_bytes_out, file_name=f"posture_report_{data_pdf.get('Student ID', 'report')}.pdf", mime="application/pdf", key="download_pdf_button")
-            except Exception as e: st.error(f"Error generating PDF: {e}\n{traceback.format_exc()}")
+                            pdf.set_font("Arial", "B", 9) 
+                            pdf.multi_cell(available_width, 5, f"For {cond}:") 
+                            pdf.set_font("Arial", "", 9)
+                            for rec_item in POSTURE_RECOMMENDATIONS[cond]:
+                                clean_rec_item = rec_item.strip() # Remove leading/trailing spaces
+                                # Add a small left margin for recommendation items if desired, or use bullet characters
+                                pdf.set_x(pdf.l_margin + 5) # Indent recommendation item
+                                pdf.multi_cell(available_width - 5, 4, clean_rec_item) 
+                            pdf.ln(1) 
+                pdf.ln(2) 
+                
+                # --- Disclaimer (Moved to main body, before potential page break for footer) ---
+                # Check if disclaimer fits, if not, add new page
+                # Estimate disclaimer height (e.g., 3 lines * 4mm/line = 12mm + spacing)
+                disclaimer_height_estimate = 15 
+                if pdf.get_y() + disclaimer_height_estimate > pdf.page_break_trigger -5: # -5 for a small bottom margin
+                    pdf.add_page()
+                
+                pdf.set_font("Arial", "I", 7) 
+                disclaimer_text = "Disclaimer: This automated analysis is for informational purposes only and not a substitute for professional medical advice. Consult a healthcare provider for health concerns."
+                pdf.multi_cell(0, 3.5, disclaimer_text, align="C") 
+                
+                # Output PDF
+                pdf_output_data = pdf.output(dest='S') 
+                pdf_bytes_out = bytes(pdf_output_data) 
+
+                if not pdf_bytes_out: 
+                    st.error("Critical PDF Error: Output from FPDF is empty or None. No PDF data generated.")
+                else:
+                    st.success("PDF Report Generated!")
+                    st.download_button(
+                        label="📥 Download Report PDF",
+                        data=pdf_bytes_out,
+                        file_name=f"posture_report_{data_pdf.get('Student ID', 'report') if data_pdf else 'report'}.pdf",
+                        mime="application/pdf",
+                        key="download_full_pdf_button"
+                    )
+            except Exception as e: 
+                st.error(f"Error during PDF generation process: {e}\n{traceback.format_exc()}")
 
 # --- View Data Table and Cloud Upload ---
+# ... (rest of the script remains the same) ...
 st.markdown("---"); st.subheader("📊 View Locally Saved Records")
 if st.session_state.records:
     records_per_page = 10
@@ -579,7 +609,7 @@ if st.session_state.records:
     display_records = st.session_state.records
     if search_term:
         display_records = [r for r in st.session_state.records if (search_term.lower() in r.get('Student Name', '').lower() or search_term.lower() in r.get('Student ID', '').lower())]
-        total_records = len(display_records) # Update total for pagination if search is active
+        total_records = len(display_records) 
         total_pages = (total_records + records_per_page - 1) // records_per_page if total_records > 0 else 0
         if st.session_state.current_page_local_records >= total_pages and total_pages > 0 : st.session_state.current_page_local_records = total_pages -1
         elif total_pages == 0 : st.session_state.current_page_local_records = 0
@@ -597,14 +627,14 @@ if st.session_state.records:
     def convert_all_to_csv(records_list):
         if not records_list: return b""
         return pd.DataFrame(records_list).to_csv(index=False).encode("utf-8")
-    if st.session_state.records: # Only show download if there are any records at all
+    if st.session_state.records: 
         csv_all = convert_all_to_csv(st.session_state.records) 
         st.download_button("📥 Download All Local Records (CSV)", data=csv_all, file_name="all_posture_records.csv", mime="text/csv", key="download_all_csv")
 else: st.info("No records saved locally yet.")
 
 st.markdown("---"); st.subheader("☁️ Cloud Data Storage")
 if st.session_state.get('records'):
-    if st.button("⬆️ Transfer Saved Records to Cloud", key="upload_to_azure_button"):
+    if st.button("⬆️ Upload Data to Cloud", key="upload_to_azure_button"):
         with st.spinner("Connecting to database and uploading records..."):
             conn = get_db_connection() 
             if conn:
@@ -625,3 +655,4 @@ with button_col2_manual:
     else: st.warning("User manual PDF not found in assets folder (expected: assets/FitNurture_User_Manual.pdf).")
 
 st.markdown("""<div class="copyright-footer">© Copyright 2025 FutureNurture | <a href="http://www.futurenurture.in" target="_blank">www.futurenurture.in</a></div>""", unsafe_allow_html=True)
+

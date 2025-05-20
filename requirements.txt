@@ -2,7 +2,7 @@ streamlit
 opencv-python-headless
 numpy
 mediapipe
-fpdf2
+fpdf
 Pillow
 pandas
 pyodbc
