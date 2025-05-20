@@ -1,1 +1,3 @@
 libgl1
+msodbcsql18
+unixodbc-dev
