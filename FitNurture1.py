@@ -484,7 +484,7 @@ if st.session_state.get("current_entry") and st.session_state.get("landmark_imag
                 logo_pdf_path = next((p for p in logo_paths if os.path.exists(p)), None)
                 if logo_pdf_path:
                     logo_width_pdf = 35 
-                    logo_height_pdf = 17.5 # Assuming a 2:1 aspect ratio for a typical logo
+                    logo_height_pdf = 17.5 
                     if current_y_logo + logo_height_pdf > pdf.page_break_trigger - 5: 
                         pdf.add_page()
                         current_y_logo = pdf.get_y() 
@@ -506,7 +506,7 @@ if st.session_state.get("current_entry") and st.session_state.get("landmark_imag
                 if st.session_state.get("landmark_image"):
                     pil_image = st.session_state.landmark_image 
                     
-                    page_width = pdf.w - pdf.l_margin - pdf.r_margin # Use FPDF's internal page width
+                    page_width = pdf.w - pdf.l_margin - pdf.r_margin 
                     max_image_height_pdf = 80 
                     
                     original_w_px, original_h_px = pil_image.size
@@ -520,13 +520,13 @@ if st.session_state.get("current_entry") and st.session_state.get("landmark_imag
                         img_w_pdf = img_h_pdf / aspect_ratio if aspect_ratio > 0 else max_image_height_pdf
 
                     current_y_img = pdf.get_y()
-                    if current_y_img + img_h_pdf > pdf.page_break_trigger - 5: # Check against page break trigger
+                    if current_y_img + img_h_pdf > pdf.page_break_trigger - 5: 
                         pdf.add_page()
                         current_y_img = pdf.get_y()
 
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_img_f:
                         pil_image.save(tmp_img_f.name, format="JPEG")
-                        img_x_pos = (pdf.w - img_w_pdf) / 2 # Center image based on FPDF's page width
+                        img_x_pos = (pdf.w - img_w_pdf) / 2 
                         pdf.image(tmp_img_f.name, x=img_x_pos, y=current_y_img, w=img_w_pdf, h=img_h_pdf)
                     os.unlink(tmp_img_f.name)
                     pdf.set_y(current_y_img + img_h_pdf + 5) 
@@ -550,25 +550,22 @@ if st.session_state.get("current_entry") and st.session_state.get("landmark_imag
                     pdf.set_font("Arial", "B", 11) 
                     pdf.cell(0, 7, "General Recommendations:", ln=1) 
                     pdf.set_font("Arial", "", 9) 
-                    available_width = pdf.w - pdf.l_margin - pdf.r_margin - 5 # Subtract a bit for potential indent
+                    available_width = pdf.w - pdf.l_margin - pdf.r_margin - 5 
                     for cond in detected_cond_pdf:
                         if cond in POSTURE_RECOMMENDATIONS:
                             pdf.set_font("Arial", "B", 9) 
                             pdf.multi_cell(available_width, 5, f"For {cond}:") 
                             pdf.set_font("Arial", "", 9)
                             for rec_item in POSTURE_RECOMMENDATIONS[cond]:
-                                clean_rec_item = rec_item.strip() # Remove leading/trailing spaces
-                                # Add a small left margin for recommendation items if desired, or use bullet characters
-                                pdf.set_x(pdf.l_margin + 5) # Indent recommendation item
+                                clean_rec_item = rec_item.strip() 
+                                pdf.set_x(pdf.l_margin + 5) 
                                 pdf.multi_cell(available_width - 5, 4, clean_rec_item) 
                             pdf.ln(1) 
                 pdf.ln(2) 
                 
                 # --- Disclaimer (Moved to main body, before potential page break for footer) ---
-                # Check if disclaimer fits, if not, add new page
-                # Estimate disclaimer height (e.g., 3 lines * 4mm/line = 12mm + spacing)
                 disclaimer_height_estimate = 15 
-                if pdf.get_y() + disclaimer_height_estimate > pdf.page_break_trigger -5: # -5 for a small bottom margin
+                if pdf.get_y() + disclaimer_height_estimate > pdf.page_break_trigger -5: 
                     pdf.add_page()
                 
                 pdf.set_font("Arial", "I", 7) 
@@ -577,7 +574,8 @@ if st.session_state.get("current_entry") and st.session_state.get("landmark_imag
                 
                 # Output PDF
                 pdf_output_data = pdf.output(dest='S') 
-                pdf_bytes_out = bytes(pdf_output_data) 
+                # The error indicates pdf_output_data is bytearray, so convert to bytes
+                pdf_bytes_out = bytes(pdf_output_data)
 
                 if not pdf_bytes_out: 
                     st.error("Critical PDF Error: Output from FPDF is empty or None. No PDF data generated.")
@@ -632,9 +630,9 @@ if st.session_state.records:
         st.download_button("📥 Download All Local Records (CSV)", data=csv_all, file_name="all_posture_records.csv", mime="text/csv", key="download_all_csv")
 else: st.info("No records saved locally yet.")
 
-st.markdown("---"); st.subheader("☁️ Cloud Data Storage")
+st.markdown("---"); st.subheader("☁️ Cloud Storage (Azure SQL)")
 if st.session_state.get('records'):
-    if st.button("⬆️ Upload Data to Cloud", key="upload_to_azure_button"):
+    if st.button("⬆️ Upload All Saved Local Records to Azure SQL", key="upload_to_azure_button"):
         with st.spinner("Connecting to database and uploading records..."):
             conn = get_db_connection() 
             if conn:
