@@ -642,9 +642,9 @@ if st.session_state.records:
         st.download_button("📥 Download All Local Records (CSV)", data=csv_all, file_name="all_posture_records.csv", mime="text/csv", key="download_all_csv")
 else: st.info("No records saved locally yet.")
 
-st.markdown("---"); st.subheader("☁️ Cloud Storage (Azure SQL)")
+st.markdown("---"); st.subheader("☁️ Cloud Data Storage")
 if st.session_state.get('records'):
-    if st.button("⬆️ Upload All Saved Local Records to Azure SQL", key="upload_to_azure_button"):
+    if st.button("⬆️ Upload All Saved Records to Cloud", key="upload_to_azure_button"):
         with st.spinner("Connecting to database and uploading records..."):
             conn = get_db_connection() 
             if conn:
