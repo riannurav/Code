@@ -111,10 +111,6 @@ class PDFManual(FPDF):
 MARKDOWN_MANUAL_CONTENT = """
 # FitNurture Posture Detection App - User Manual
 
-<!-- If you have a logo image file (e.g., logo.png) in your project's 'assets' folder, 
-     you can often display it in Markdown like this if the Markdown renderer supports it, 
-     or you'd add it manually if converting to PDF.
-     For now, we'll assume the app itself displays the logo. -->
 ## 1. Introduction
 
 Welcome to the FitNurture Posture Detection App! This application is designed to help identify potential postural abnormalities in students using image analysis. By capturing a clear image, the app can provide an initial assessment, generate a report, and store data for future reference and analysis, including potential use in developing more accurate machine learning models.
@@ -192,6 +188,7 @@ If you have a pre-existing image that meets all the guidelines:
 
 ### 4.1. Entering Child's Name
 * Before taking a picture or uploading an image, you **must** enter the child's name in the "Child's Name" field. This is a mandatory field for associating the analysis with the correct individual.
+* **Crucial for Data Accuracy:** Ensure you **change the name for each new student** being analyzed. If you analyze multiple students in one session, always update this field before capturing or uploading the image for the next student. Failure to do so will associate the new analysis with the previously entered name.
 
 ### 4.2. Selecting Abnormalities to Detect
 * Below the name input, you'll find a section titled "Select Abnormalities to Detect."
