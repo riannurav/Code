@@ -22,6 +22,30 @@ import gc  # Import garbage collector
 import pyodbc # Added for Azure SQL connection
 import traceback # Added for PDF error debugging
 
+# --- Application Constants ---
+LANDMARK_VISIBILITY_THRESHOLD = 0.5
+DB_TABLE_NAME = "PostureRecords"
+
+# Constants for add_landmark_labels
+TEXT_OFFSET_X = 70
+ARROW_TIP_LENGTH = 0.3
+TEXT_FONT_SCALE = 0.5
+TEXT_THICKNESS = 1
+HIGHLIGHT_COLOR_BGR = (0, 0, 255)  # Blue, Green, Red for OpenCV
+TEXT_BG_COLOR_BGR = (255, 255, 255) # White
+
+# Constants for Abnormality Detection Thresholds
+KYPHOSIS_THRESHOLD_SHOULDER_HIP_Z_DIFF = 0.15
+LORDOSIS_THRESHOLD_HIP_KNEE_Z_DIFF = 0.1
+TECH_NECK_MIN_ANGLE = 45.0
+TECH_NECK_MIN_EAR_SHOULDER_DIST = 0.15
+SCOLIOSIS_THRESHOLD_SHOULDER_Y_DIFF = 0.05
+FLAT_FEET_THRESHOLD_FOOT_Z_DIFF = 0.05  # Condition: metric < threshold
+GAIT_ABNORMALITIES_THRESHOLD_ANKLE_X_DIFF = 0.25
+KNOCK_KNEES_KNEE_ANKLE_RATIO_THRESHOLD = 0.7 # Condition: knee_x_diff < ankle_x_diff * threshold
+BOW_LEGS_ANKLE_KNEE_RATIO_THRESHOLD = 0.7    # Condition: ankle_x_diff < knee_x_diff * threshold
+
+
 
 # --- Memory Management Functions ---
 def clear_image_memory():
@@ -35,22 +59,25 @@ def clear_image_memory():
     gc.collect()  # Force garbage collection
 
 def optimize_image(image, max_size=800):
-    """Resize image while maintaining aspect ratio"""
+    """Resize image while maintaining aspect ratio, ensuring new dimensions are at least 1."""
     if isinstance(image, np.ndarray):
         img = Image.fromarray(image)
     else:
         img = image
-    
-    if img.size[0] == 0 or img.size[1] == 0: 
-        return Image.new('RGB', (100,100), color = 'lightgray') 
 
-    if max(img.size) > 0 : 
-        ratio = max_size / max(img.size)
-        if ratio < 1:  
-            new_size = tuple(int(dim * ratio) for dim in img.size)
-            img = img.resize(new_size, Image.LANCZOS) 
-    
+    if not hasattr(img, 'size') or img.size[0] == 0 or img.size[1] == 0:
+        return Image.new('RGB', (100, 100), color='lightgray')
+
+    current_max_dim = max(img.size)
+    if current_max_dim > max_size:  # Only resize if image is larger than max_size
+        ratio = max_size / current_max_dim
+        # Calculate new dimensions, ensuring they are at least 1 pixel
+        new_width = max(1, int(img.size[0] * ratio))
+        new_height = max(1, int(img.size[1] * ratio))
+        if new_width > 0 and new_height > 0: # Ensure valid new dimensions
+            img = img.resize((new_width, new_height), Image.LANCZOS)
     return img
+
 
 
 # Add this custom CSS after your existing page config
@@ -94,9 +121,11 @@ with col2_logo:
         if os.path.exists(logo_path):
             try:
                 st.image(logo_path, width=225, use_container_width=True)
-                logo_found = True; break
+                logo_found = True
+                break
             except Exception as e:
-                st.warning(f"Could not load logo {logo_path}: {e}"); continue
+                st.warning(f"Could not load logo {logo_path}: {e}")
+                continue
     if not logo_found:
         st.warning("Logo not found. Please ensure the logo file (logo.jpg, logo.png, etc.) is in the assets directory.")
 st.markdown("<br>", unsafe_allow_html=True)
@@ -124,18 +153,18 @@ def add_landmark_labels(image, landmarks):
     for landmark_id, label in landmark_labels.items():
         if landmark_id.value < len(landmarks.landmark):
             landmark = landmarks.landmark[landmark_id.value]
-            if landmark.visibility > 0.5:
+            if landmark.visibility > LANDMARK_VISIBILITY_THRESHOLD:
                 px, py = int(landmark.x * w), int(landmark.y * h)
-                offset_x = -70 if px < w/2 else 70
+                offset_x = -TEXT_OFFSET_X if px < w/2 else TEXT_OFFSET_X
                 text_align = 'right' if px < w/2 else 'left'
-                cv2.arrowedLine(img, (px + (offset_x//2), py), (px, py), (0,0,255), 1, tipLength=0.3)
+                cv2.arrowedLine(img, (px + (offset_x//2), py), (px, py), HIGHLIGHT_COLOR_BGR, TEXT_THICKNESS, tipLength=ARROW_TIP_LENGTH)
                 text_x = px + offset_x
                 text_anchor = (text_x - 5 if text_align == 'right' else text_x + 5, py + 5)
-                (t_w, t_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                (t_w, t_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, TEXT_FONT_SCALE, TEXT_THICKNESS)
                 bg_p1 = (text_anchor[0] - t_w - 4, text_anchor[1] - t_h - 4) if text_align == 'right' else (text_anchor[0] - 4, text_anchor[1] - t_h - 4)
                 bg_p2 = (text_anchor[0] + 4, text_anchor[1] + 4) if text_align == 'right' else (text_anchor[0] + t_w + 4, text_anchor[1] + 4)
-                cv2.rectangle(img, bg_p1, bg_p2, (255,255,255), -1)
-                cv2.putText(img, label, text_anchor, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 1)
+                cv2.rectangle(img, bg_p1, bg_p2, TEXT_BG_COLOR_BGR, -1) # Background for text
+                cv2.putText(img, label, text_anchor, cv2.FONT_HERSHEY_SIMPLEX, TEXT_FONT_SCALE, HIGHLIGHT_COLOR_BGR, TEXT_THICKNESS)
     return img
 
 # --- App Config ---
@@ -187,7 +216,7 @@ def get_db_connection():
 def create_table_if_not_exists(conn):
     if conn is None: return
     cursor = conn.cursor()
-    table_name = "PostureRecords"
+    table_name = DB_TABLE_NAME
     
     column_definitions_dict = {
         "Student_ID": "NVARCHAR(50) NOT NULL PRIMARY KEY",
@@ -228,7 +257,7 @@ def upload_records_to_sql(conn, records_to_upload):
 
     create_table_if_not_exists(conn)
     cursor = conn.cursor()
-    table_name = "PostureRecords"
+    table_name = DB_TABLE_NAME
 
     ordered_py_keys = ["Student ID", "Student Name", "Timestamp"] 
     sql_cols_for_std_fields = ["Student_ID", "Student_Name", "Observation_Timestamp"] 
@@ -393,7 +422,7 @@ if image_data and child_name:
         img_bgr_with_landmarks = add_landmark_labels(img_bgr_with_landmarks, results.pose_landmarks) 
         st.session_state.landmark_image = Image.fromarray(cv2.cvtColor(img_bgr_with_landmarks, cv2.COLOR_BGR2RGB)) 
 
-        def is_visible(le): return lm[le.value].visibility > 0.5 if le.value < len(lm) else False
+        def is_visible(le): return lm[le.value].visibility > LANDMARK_VISIBILITY_THRESHOLD if le.value < len(lm) else False
         
         neck_angle = calculate_angle(*[[lm[p.value].x, lm[p.value].y] for p in [mp_pose.PoseLandmark.RIGHT_EAR, mp_pose.PoseLandmark.NOSE, mp_pose.PoseLandmark.RIGHT_SHOULDER]]) if all(is_visible(p) for p in [mp_pose.PoseLandmark.RIGHT_EAR, mp_pose.PoseLandmark.NOSE, mp_pose.PoseLandmark.RIGHT_SHOULDER]) else 0.0
         ear_shoulder_dist = abs(lm[mp_pose.PoseLandmark.RIGHT_EAR.value].x - lm[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].x) if all(is_visible(p) for p in [mp_pose.PoseLandmark.RIGHT_EAR, mp_pose.PoseLandmark.RIGHT_SHOULDER]) else 0.0
@@ -419,14 +448,14 @@ if image_data and child_name:
         current_abnormalities = {k: False for k,v in st.session_state.selected_abnormalities.items() if v}
         def check_metric(m): return metrics.get(m) is not None
 
-        if "Kyphosis" in current_abnormalities and all(check_metric(m) for m in ["shoulder_z", "hip_z"]): current_abnormalities["Kyphosis"] = metrics["shoulder_z"] - metrics["hip_z"] > 0.15
-        if "Lordosis" in current_abnormalities and all(check_metric(m) for m in ["hip_z", "knee_z"]): current_abnormalities["Lordosis"] = metrics["hip_z"] - metrics["knee_z"] > 0.1
-        if "Tech Neck" in current_abnormalities: current_abnormalities["Tech Neck"] = (metrics["neck_angle"] > 45 and metrics["ear_shoulder_distance"] > 0.15)
-        if "Scoliosis" in current_abnormalities and check_metric("shoulder_y_diff"): current_abnormalities["Scoliosis"] = metrics["shoulder_y_diff"] > 0.05
-        if "Flat Feet" in current_abnormalities and check_metric("foot_z_diff"): current_abnormalities["Flat Feet"] = metrics["foot_z_diff"] < 0.05
-        if "Gait Abnormalities" in current_abnormalities and check_metric("ankle_x_diff"): current_abnormalities["Gait Abnormalities"] = metrics["ankle_x_diff"] > 0.25
-        if "Knock Knees" in current_abnormalities and all(check_metric(m) for m in ["knee_x_diff", "ankle_x_diff"]) and metrics["ankle_x_diff"] != 0: current_abnormalities["Knock Knees"] = metrics["knee_x_diff"] < metrics["ankle_x_diff"] * 0.7
-        if "Bow Legs" in current_abnormalities and all(check_metric(m) for m in ["knee_x_diff", "ankle_x_diff"]) and metrics["knee_x_diff"] != 0: current_abnormalities["Bow Legs"] = metrics["ankle_x_diff"] < metrics["knee_x_diff"] * 0.7
+        if "Kyphosis" in current_abnormalities and all(check_metric(m) for m in ["shoulder_z", "hip_z"]): current_abnormalities["Kyphosis"] = (metrics["shoulder_z"] - metrics["hip_z"]) > KYPHOSIS_THRESHOLD_SHOULDER_HIP_Z_DIFF
+        if "Lordosis" in current_abnormalities and all(check_metric(m) for m in ["hip_z", "knee_z"]): current_abnormalities["Lordosis"] = (metrics["hip_z"] - metrics["knee_z"]) > LORDOSIS_THRESHOLD_HIP_KNEE_Z_DIFF
+        if "Tech Neck" in current_abnormalities and all(check_metric(m) for m in ["neck_angle", "ear_shoulder_distance"]): current_abnormalities["Tech Neck"] = (metrics["neck_angle"] > TECH_NECK_MIN_ANGLE and metrics["ear_shoulder_distance"] > TECH_NECK_MIN_EAR_SHOULDER_DIST)
+        if "Scoliosis" in current_abnormalities and check_metric("shoulder_y_diff"): current_abnormalities["Scoliosis"] = metrics["shoulder_y_diff"] > SCOLIOSIS_THRESHOLD_SHOULDER_Y_DIFF
+        if "Flat Feet" in current_abnormalities and check_metric("foot_z_diff"): current_abnormalities["Flat Feet"] = metrics["foot_z_diff"] < FLAT_FEET_THRESHOLD_FOOT_Z_DIFF
+        if "Gait Abnormalities" in current_abnormalities and check_metric("ankle_x_diff"): current_abnormalities["Gait Abnormalities"] = metrics["ankle_x_diff"] > GAIT_ABNORMALITIES_THRESHOLD_ANKLE_X_DIFF
+        if "Knock Knees" in current_abnormalities and all(check_metric(m) for m in ["knee_x_diff", "ankle_x_diff"]) and metrics["ankle_x_diff"] != 0: current_abnormalities["Knock Knees"] = metrics["knee_x_diff"] < (metrics["ankle_x_diff"] * KNOCK_KNEES_KNEE_ANKLE_RATIO_THRESHOLD)
+        if "Bow Legs" in current_abnormalities and all(check_metric(m) for m in ["knee_x_diff", "ankle_x_diff"]) and metrics["knee_x_diff"] != 0: current_abnormalities["Bow Legs"] = metrics["ankle_x_diff"] < (metrics["knee_x_diff"] * BOW_LEGS_ANKLE_KNEE_RATIO_THRESHOLD)
         
         student_id = st.session_state.get("current_student_id")
         if not student_id: 
@@ -463,6 +492,10 @@ if st.session_state.get("current_entry") and st.session_state.get("landmark_imag
 
     with col2_actions:
         if st.button("📄 Generate PDF Report", key="generate_pdf_button"):
+            # --- PDF Generation ---
+            # This section is quite long. For further maintainability, consider
+            # refactoring parts of this (e.g., header, student details, image embedding,
+            # results, recommendations) into separate helper functions.
             try:
                 data_pdf = st.session_state.current_entry
                 abn_pdf = st.session_state.abnormalities
@@ -665,4 +698,3 @@ with button_col2_manual:
     else: st.warning("User manual PDF not found in assets folder (expected: assets/FitNurture_User_Manual.pdf).")
 
 st.markdown("""<div class="copyright-footer">© Copyright 2025 FutureNurture | <a href="http://www.futurenurture.in" target="_blank">www.futurenurture.in</a></div>""", unsafe_allow_html=True)
-
