@@ -3,6 +3,9 @@ opencv-python-headless
 numpy
 mediapipe
 fpdf
+fpdf2
 Pillow
 pandas
 pyodbc
+requests
+
