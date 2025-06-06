@@ -907,4 +907,4 @@ with button_col2_manual:
         except Exception as e_manual: st.warning(f"Could not read user manual: {e_manual}") 
     else: st.warning("User manual PDF not found in assets folder (expected: assets/FitNurture_User_Manual.pdf).")
 
-.st.markdown(f"""<div class="copyright-footer">© Copyright {datetime.now().year} FutureNurture | <a href="http://www.futurenurture.in" target="_blank">www.futurenurture.in</a></div>""", unsafe_allow_html=True)
+st.markdown(f"""<div class="copyright-footer">© Copyright {datetime.now().year} FutureNurture | <a href="http://www.futurenurture.in" target="_blank">www.futurenurture.in</a></div>""", unsafe_allow_html=True)
