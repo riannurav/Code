@@ -34,16 +34,18 @@ TEXT_THICKNESS = 1
 HIGHLIGHT_COLOR_BGR = (0, 0, 255)
 TEXT_BG_COLOR_BGR = (255, 255, 255)
 
-# Original Thresholds
-KYPHOSIS_THRESHOLD_SHOULDER_HIP_Z_DIFF = 0.15
-LORDOSIS_THRESHOLD_HIP_KNEE_Z_DIFF = 0.1
-TECH_NECK_MAX_ESH_ANGLE = 75.0 # Angle should be LESS than this for tech neck (forward head)
-TECH_NECK_MIN_ESH_HORIZ_DIST = 0.08 # Ear should be MORE forward than this distance
-SCOLIOSIS_THRESHOLD_SHOULDER_Y_DIFF = 0.05
-FLAT_FEET_THRESHOLD_FOOT_Z_DIFF = 0.05 # Arch height (z-diff) LESS than this
-GAIT_ABNORMALITIES_THRESHOLD_ANKLE_X_DIFF = 0.25 # Ankles WIDER than this
-KNOCK_KNEES_KNEE_ANKLE_RATIO_THRESHOLD = 0.1 # Knees significantly closer than ankles (knee_x_diff < ankle_x_diff * ratio)
-BOW_LEGS_ANKLE_KNEE_RATIO_THRESHOLD = 1.5 # Ankles significantly closer than knees (ankle_x_diff < knee_x_diff / ratio, or knee_x_diff > ankle_x_diff * ratio)
+# Original/Default Thresholds
+DEFAULT_THRESHOLDS = {
+    "kyphosis": 0.15,
+    "lordosis": 0.10,
+    "tech_neck_angle": 75.0, # Angle should be LESS than this
+    "tech_neck_dist": 0.08, # Ear should be MORE forward than this
+    "scoliosis": 0.05,
+    "flat_feet": 0.05, # Arch height (z-diff) LESS than this
+    "gait": 0.25,
+    "knock_knees": 0.10, # Ratio of knee_x_diff to ankle_x_diff
+    "bow_legs": 1.5, # Ratio of knee_x_diff to ankle_x_diff
+}
 
 CLOTHING_ADJUSTMENT_FACTOR = 1.15 # 15% more lenient threshold for loose clothing for Z and Y diffs
 
@@ -79,6 +81,7 @@ default_session_states = {
     'captured_images_multi': {view: None for view in VIEWS_SEQUENCE},
     'camera_input_key_multi': "camera_multi_0",
     'all_multi_images_uploaded': False,
+    'thresholds': DEFAULT_THRESHOLDS.copy(),
 }
 for view_name_key_init in [f"uploaded_image_{view.lower().replace(' ', '_')}" for view in VIEWS_SEQUENCE]:
     default_session_states[view_name_key_init] = None
@@ -92,13 +95,12 @@ def clear_image_memory():
     """Clears image and processing related states, keeps student info and settings."""
     st.session_state.landmark_image = None
     st.session_state.all_landmark_images = {}
-    # st.session_state.current_entry = {} # Keep demographic part of current_entry
     st.session_state.abnormalities = {}
     st.session_state.processing_done = False
     st.session_state.capture_stage = 0
     st.session_state.captured_images_multi = {view: None for view in VIEWS_SEQUENCE}
     st.session_state.all_multi_images_captured = False
-    st.session_state.camera_input_key_multi = "camera_multi_0" # Reset key for unique camera inputs
+    st.session_state.camera_input_key_multi = "camera_multi_0"
     st.session_state.gemini_suggestions = None
     st.session_state.gemini_suggestions_error = None
     for view_name_key in [f"uploaded_image_{view.lower().replace(' ', '_')}" for view in VIEWS_SEQUENCE]:
@@ -182,7 +184,7 @@ mp_pose, mp_drawing, pose_static = mp.solutions.pose, mp.solutions.drawing_utils
 def get_db_connection():
     try:
         secrets_dict = {k: st.secrets.get(k) for k in ["DB_DRIVER", "DB_SERVER", "DB_NAME", "DB_UID", "DB_PWD"]}
-        missing = [k for k, v in secrets_dict.items() if not v and k != "DB_DRIVER"] # DB_DRIVER can be optional
+        missing = [k for k, v in secrets_dict.items() if not v and k != "DB_DRIVER"]
         if missing: return {"type": "error", "message": f"DB secrets missing: {', '.join(missing)}."}
         db_driver = secrets_dict.get("DB_DRIVER") or "{ODBC Driver 17 for SQL Server}"
         conn_str = f"DRIVER={db_driver};SERVER={secrets_dict['DB_SERVER']};DATABASE={secrets_dict['DB_NAME']};UID={secrets_dict['DB_UID']};PWD={secrets_dict['DB_PWD']};Encrypt=yes;TrustServerCertificate=no;ConnectionTimeout=30;"
@@ -194,13 +196,9 @@ def create_table_if_not_exists(conn):
     if conn is None: return False
     cursor = conn.cursor(); table_name = DB_TABLE_NAME
     cols = {
-        "Student_ID": "NVARCHAR(50) NOT NULL PRIMARY KEY",
-        "Student_Name": "NVARCHAR(255) NULL",
-        "Age_Group": "NVARCHAR(50) NULL",      # NEW
-        "Gender": "NVARCHAR(20) NULL",         # NEW
-        "Loose_Clothing": "BIT NULL",          # NEW
-        "Observation_Timestamp": "DATETIME2 NULL",
-        "UploadTimestamp": "DATETIME2 DEFAULT GETDATE() NULL"
+        "Student_ID": "NVARCHAR(50) NOT NULL PRIMARY KEY", "Student_Name": "NVARCHAR(255) NULL",
+        "Age_Group": "NVARCHAR(50) NULL", "Gender": "NVARCHAR(20) NULL", "Loose_Clothing": "BIT NULL",
+        "Observation_Timestamp": "DATETIME2 NULL", "UploadTimestamp": "DATETIME2 DEFAULT GETDATE() NULL"
     }
     for key in POSTURE_RECOMMENDATIONS.keys(): cols[key.replace(' ', '_').replace('-', '_')] = "BIT NULL"
     metrics_keys = ["shoulder_z", "hip_z", "knee_z", "ear_shoulder_hip_angle", "ear_shoulder_horizontal_distance", "shoulder_y_diff", "foot_z_diff", "ankle_x_diff", "knee_x_diff"]
@@ -218,7 +216,7 @@ def upload_records_to_sql(conn, records_to_upload):
     if not create_table_if_not_exists(conn): return {"type": "error", "message": "Failed to create or verify database table."}
 
     cursor = conn.cursor(); table_name = DB_TABLE_NAME
-    base_sql_cols = ["Student_ID", "Student_Name", "Age_Group", "Gender", "Loose_Clothing", "Observation_Timestamp"] # UPDATED
+    base_sql_cols = ["Student_ID", "Student_Name", "Age_Group", "Gender", "Loose_Clothing", "Observation_Timestamp"]
     abnormality_sql_cols = [k.replace(' ', '_').replace('-', '_') for k in POSTURE_RECOMMENDATIONS.keys()]
     metrics_sql_cols = ["shoulder_z", "hip_z", "knee_z", "ear_shoulder_hip_angle", "ear_shoulder_horizontal_distance", "shoulder_y_diff", "foot_z_diff", "ankle_x_diff", "knee_x_diff"]
     all_sql_cols = base_sql_cols + abnormality_sql_cols + metrics_sql_cols
@@ -233,31 +231,25 @@ def upload_records_to_sql(conn, records_to_upload):
         values_for_insert = [
             record.get("Student ID"), record.get("Student Name"),
             record.get("Age_Group"), record.get("Gender"),
-            bool(record.get("Loose_Clothing", False)), # Ensure boolean for DB
+            bool(record.get("Loose_Clothing", False)),
             record.get("Timestamp")
-        ] + \
-        [bool(record.get(k, False)) for k in POSTURE_RECOMMENDATIONS.keys()] + \
+        ] + [bool(record.get(k, False)) for k in POSTURE_RECOMMENDATIONS.keys()] + \
         [float(record.get(k)) if record.get(k) is not None else None for k in metrics_sql_cols]
 
         student_id_val = record.get("Student ID")
         if not student_id_val:
-            error_messages.append(f"Skipping record (missing Student ID): {record.get('Student Name', 'N/A')}")
-            error_count +=1; continue
+            error_messages.append(f"Skipping record (missing Student ID): {record.get('Student Name', 'N/A')}"); error_count +=1; continue
         try:
             cursor.execute(insert_sql, tuple(values_for_insert)); insert_count += 1
-        except pyodbc.IntegrityError as e:
-            if '2627' in str(e) or 'PRIMARY KEY constraint' in str(e).upper() or 'unique constraint' in str(e).upper():
-                try: cursor.execute(update_sql, tuple(values_for_insert[1:] + [student_id_val])); update_count += 1
-                except pyodbc.Error as ue: error_messages.append(f"Error updating '{student_id_val}': {ue}"); error_count += 1; conn.rollback() # Rollback on inner error
-            else: error_messages.append(f"DB Integrity Error for '{student_id_val}': {e}"); error_count += 1; conn.rollback()
+        except pyodbc.IntegrityError:
+            try: cursor.execute(update_sql, tuple(values_for_insert[1:] + [student_id_val])); update_count += 1
+            except pyodbc.Error as ue: error_messages.append(f"Error updating '{student_id_val}': {ue}"); error_count += 1; conn.rollback()
         except pyodbc.Error as e: error_messages.append(f"DB Error for '{student_id_val}': {e}"); error_count += 1; conn.rollback()
         except Exception as ex: error_messages.append(f"Unexpected error for '{student_id_val}': {ex}"); error_count += 1; conn.rollback()
-        if error_count > 0: break # Stop processing this batch on first error after rollback
+        if error_count > 0: break
 
     final_status = {}
-    if error_count > 0:
-        # Rollback might have already happened in the loop
-        final_status = {"type": "error", "message": f"{error_count} record(s) failed. Batch processing stopped. Errors: {'; '.join(error_messages)}"}
+    if error_count > 0: final_status = {"type": "error", "message": f"{error_count} record(s) failed. Batch processing stopped. Errors: {'; '.join(error_messages)}"}
     elif insert_count > 0 or update_count > 0:
         try:
             conn.commit()
@@ -269,8 +261,7 @@ def upload_records_to_sql(conn, records_to_upload):
             try: conn.rollback()
             except pyodbc.Error as rb_err: error_messages.append(f"Rollback after commit failure also failed: {rb_err}")
             final_status = {"type": "error", "message": f"Database commit error: {e}. Records not saved. Errors: {'; '.join(error_messages)}"}
-    else:
-        final_status = {"type": "info", "message": "No records were processed for upload (or all were skipped)."}
+    else: final_status = {"type": "info", "message": "No records were processed for upload."}
     try: cursor.close()
     except pyodbc.Error: pass
     return final_status
@@ -278,14 +269,13 @@ def upload_records_to_sql(conn, records_to_upload):
 # --- Image Processing and Abnormality Detection ---
 def process_image_for_view(image_pil, view_name="Unknown View"):
     if image_pil is None: return None, None, {}
-    img_np = np.array(image_pil)
+    img_np = np.array(image_pil);
     if img_np.shape[-1] == 4: img_np = cv2.cvtColor(img_np, cv2.COLOR_RGBA2RGB)
     elif len(img_np.shape) == 2: img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2RGB)
     results = pose_static.process(img_np)
-    landmarked_pil_image = image_pil # Default to original if no landmarks
+    landmarked_pil_image = image_pil
     if not results or not results.pose_landmarks:
-        st.warning(f"No person/landmarks detected in {view_name}.")
-        return None, landmarked_pil_image, {} # Return original image for display
+        st.warning(f"No person/landmarks detected in {view_name}."); return None, landmarked_pil_image, {}
     lm = results.pose_landmarks.landmark
     img_bgr_for_drawing = cv2.cvtColor(img_np.copy(), cv2.COLOR_RGB2BGR)
     mp_drawing.draw_landmarks(img_bgr_for_drawing, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
@@ -296,172 +286,172 @@ def process_image_for_view(image_pil, view_name="Unknown View"):
     metrics = {}
     def is_visible(le): return lm[le.value].visibility > LANDMARK_VISIBILITY_THRESHOLD if le.value < len(lm) else False
 
-    ear_lm_side, shoulder_lm_side, hip_lm_side, knee_lm_side, ankle_lm_side, heel_lm_side, foot_index_lm_side = None, None, None, None, None, None, None
-    if view_name == 'Left Side View':
-        ear_lm_side, shoulder_lm_side, hip_lm_side, knee_lm_side, ankle_lm_side, heel_lm_side, foot_index_lm_side = mp_pose.PoseLandmark.LEFT_EAR, mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.LEFT_KNEE, mp_pose.PoseLandmark.LEFT_ANKLE, mp_pose.PoseLandmark.LEFT_HEEL, mp_pose.PoseLandmark.LEFT_FOOT_INDEX
-    elif view_name == 'Right Side View' or view_name == "Side View (Single)": # Treat single view as right side for consistency
-        ear_lm_side, shoulder_lm_side, hip_lm_side, knee_lm_side, ankle_lm_side, heel_lm_side, foot_index_lm_side = mp_pose.PoseLandmark.RIGHT_EAR, mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_HIP, mp_pose.PoseLandmark.RIGHT_KNEE, mp_pose.PoseLandmark.RIGHT_ANKLE, mp_pose.PoseLandmark.RIGHT_HEEL, mp_pose.PoseLandmark.RIGHT_FOOT_INDEX
+    ear_lm, shoulder_lm, hip_lm, knee_lm, ankle_lm, heel_lm, foot_lm = (mp_pose.PoseLandmark.LEFT_EAR, mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.LEFT_KNEE, mp_pose.PoseLandmark.LEFT_ANKLE, mp_pose.PoseLandmark.LEFT_HEEL, mp_pose.PoseLandmark.LEFT_FOOT_INDEX) \
+        if view_name == 'Left Side View' else (mp_pose.PoseLandmark.RIGHT_EAR, mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_HIP, mp_pose.PoseLandmark.RIGHT_KNEE, mp_pose.PoseLandmark.RIGHT_ANKLE, mp_pose.PoseLandmark.RIGHT_HEEL, mp_pose.PoseLandmark.RIGHT_FOOT_INDEX)
 
     if view_name in SIDE_VIEWS or view_name == "Side View (Single)":
-        if ear_lm_side and shoulder_lm_side and hip_lm_side and all(is_visible(p) for p in [ear_lm_side, shoulder_lm_side, hip_lm_side]):
-            metrics["ear_shoulder_hip_angle"] = calculate_angle([lm[ear_lm_side.value].x, lm[ear_lm_side.value].y], [lm[shoulder_lm_side.value].x, lm[shoulder_lm_side.value].y], [lm[hip_lm_side.value].x, lm[hip_lm_side.value].y])
-        else: metrics["ear_shoulder_hip_angle"] = None
-        if ear_lm_side and shoulder_lm_side and all(is_visible(p) for p in [ear_lm_side, shoulder_lm_side]):
-            metrics["ear_shoulder_horizontal_distance"] = abs(lm[ear_lm_side.value].x - lm[shoulder_lm_side.value].x)
-        else: metrics["ear_shoulder_horizontal_distance"] = None
-        metrics["shoulder_z"] = lm[shoulder_lm_side.value].z if shoulder_lm_side and is_visible(shoulder_lm_side) else None
-        metrics["hip_z"] = lm[hip_lm_side.value].z if hip_lm_side and is_visible(hip_lm_side) else None
-        metrics["knee_z"] = lm[knee_lm_side.value].z if knee_lm_side and is_visible(knee_lm_side) else None
-        metrics["foot_z_diff"] = abs(lm[heel_lm_side.value].z - lm[foot_index_lm_side.value].z) if heel_lm_side and foot_index_lm_side and all(is_visible(p) for p in [heel_lm_side, foot_index_lm_side]) else None
+        if all(is_visible(p) for p in [ear_lm, shoulder_lm, hip_lm]):
+            metrics["ear_shoulder_hip_angle"] = calculate_angle([lm[ear_lm.value].x, lm[ear_lm.value].y], [lm[shoulder_lm.value].x, lm[shoulder_lm.value].y], [lm[hip_lm.value].x, lm[hip_lm.value].y])
+        if all(is_visible(p) for p in [ear_lm, shoulder_lm]):
+            metrics["ear_shoulder_horizontal_distance"] = abs(lm[ear_lm.value].x - lm[shoulder_lm.value].x)
+        if is_visible(shoulder_lm): metrics["shoulder_z"] = lm[shoulder_lm.value].z
+        if is_visible(hip_lm): metrics["hip_z"] = lm[hip_lm.value].z
+        if is_visible(knee_lm): metrics["knee_z"] = lm[knee_lm.value].z
+        if all(is_visible(p) for p in [heel_lm, foot_lm]): metrics["foot_z_diff"] = abs(lm[heel_lm.value].z - lm[foot_lm.value].z)
 
     if view_name in FRONT_BACK_VIEWS:
-        metrics["shoulder_y_diff"] = abs(lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y - lm[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].y) if all(is_visible(p) for p in [mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.RIGHT_SHOULDER]) else None
-        metrics["hip_y_diff"] = abs(lm[mp_pose.PoseLandmark.LEFT_HIP.value].y - lm[mp_pose.PoseLandmark.RIGHT_HIP.value].y) if all(is_visible(p) for p in [mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.RIGHT_HIP]) else None # For future use
-        metrics["ankle_x_diff"] = abs(lm[mp_pose.PoseLandmark.LEFT_ANKLE.value].x - lm[mp_pose.PoseLandmark.RIGHT_ANKLE.value].x) if all(is_visible(p) for p in [mp_pose.PoseLandmark.LEFT_ANKLE, mp_pose.PoseLandmark.RIGHT_ANKLE]) else None
-        metrics["knee_x_diff"] = abs(lm[mp_pose.PoseLandmark.LEFT_KNEE.value].x - lm[mp_pose.PoseLandmark.RIGHT_KNEE.value].x) if all(is_visible(p) for p in [mp_pose.PoseLandmark.LEFT_KNEE, mp_pose.PoseLandmark.RIGHT_KNEE]) else None
+        if all(is_visible(p) for p in [mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.RIGHT_SHOULDER]): metrics["shoulder_y_diff"] = abs(lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y - lm[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].y)
+        if all(is_visible(p) for p in [mp_pose.PoseLandmark.LEFT_ANKLE, mp_pose.PoseLandmark.RIGHT_ANKLE]): metrics["ankle_x_diff"] = abs(lm[mp_pose.PoseLandmark.LEFT_ANKLE.value].x - lm[mp_pose.PoseLandmark.RIGHT_ANKLE.value].x)
+        if all(is_visible(p) for p in [mp_pose.PoseLandmark.LEFT_KNEE, mp_pose.PoseLandmark.RIGHT_KNEE]): metrics["knee_x_diff"] = abs(lm[mp_pose.PoseLandmark.LEFT_KNEE.value].x - lm[mp_pose.PoseLandmark.RIGHT_KNEE.value].x)
+
     return results.pose_landmarks, landmarked_pil_image, metrics
 
 def apply_clothing_adjustment(base_threshold):
     return base_threshold * (CLOTHING_ADJUSTMENT_FACTOR if st.session_state.loose_clothing else 1.0)
 
-def analyze_multi_view_data(multi_images_pil_dict, selected_abnormalities_config):
+def analyze_multi_view_data(multi_images_pil_dict, selected_abnormalities_config, thresholds):
     all_metrics_by_view, all_landmarked_images_pil = {}, {}
     consolidated_metrics, final_abnormalities = {}, {k: False for k,v in selected_abnormalities_config.items() if v}
-    primary_display_image = None
+
     for view_name, image_pil in multi_images_pil_dict.items():
         if image_pil:
             _, landmarked_img, view_metrics = process_image_for_view(image_pil, view_name)
-            all_metrics_by_view[view_name] = view_metrics
-            all_landmarked_images_pil[view_name] = landmarked_img
-            if view_name == 'Left Side View' and landmarked_img: primary_display_image = landmarked_img
-            elif not primary_display_image and landmarked_img: primary_display_image = landmarked_img # Fallback
+            all_metrics_by_view[view_name] = view_metrics; all_landmarked_images_pil[view_name] = landmarked_img
 
-    def get_metric(name, views_to_check, default=None, use_average=False):
-        valid_metrics = [all_metrics_by_view[v_name][name] for v_name in views_to_check if v_name in all_metrics_by_view and all_metrics_by_view[v_name].get(name) is not None]
-        if not valid_metrics: return default
-        return np.nanmean(valid_metrics) if use_average else valid_metrics[0] # Prioritize first valid or average
+    def get_metric(name, views, default=None, use_avg=False):
+        vals = [all_metrics_by_view[v][name] for v in views if v in all_metrics_by_view and all_metrics_by_view[v].get(name) is not None]
+        return np.nanmean(vals) if use_avg and vals else (vals[0] if vals else default)
 
-    consolidated_metrics["shoulder_z"] = get_metric("shoulder_z", SIDE_VIEWS, use_average=True)
-    consolidated_metrics["hip_z"] = get_metric("hip_z", SIDE_VIEWS, use_average=True)
-    consolidated_metrics["knee_z"] = get_metric("knee_z", SIDE_VIEWS, use_average=True)
-    consolidated_metrics["ear_shoulder_hip_angle"] = get_metric("ear_shoulder_hip_angle", SIDE_VIEWS, use_average=True, default=90.0) # Default to neutral if not visible
-    consolidated_metrics["ear_shoulder_horizontal_distance"] = get_metric("ear_shoulder_horizontal_distance", SIDE_VIEWS, use_average=True, default=0.0)
-    consolidated_metrics["foot_z_diff"] = get_metric("foot_z_diff", SIDE_VIEWS, use_average=True)
-    consolidated_metrics["shoulder_y_diff"] = get_metric("shoulder_y_diff", ['Back View', 'Front View']) # Prefer Back View if available
-    consolidated_metrics["ankle_x_diff"] = get_metric("ankle_x_diff", ['Front View', 'Back View'])
-    consolidated_metrics["knee_x_diff"] = get_metric("knee_x_diff", ['Front View', 'Back View'])
+    consolidated_metrics = {
+        "shoulder_z": get_metric("shoulder_z", SIDE_VIEWS, use_avg=True), "hip_z": get_metric("hip_z", SIDE_VIEWS, use_avg=True),
+        "knee_z": get_metric("knee_z", SIDE_VIEWS, use_avg=True), "ear_shoulder_hip_angle": get_metric("ear_shoulder_hip_angle", SIDE_VIEWS, use_avg=True, default=90.0),
+        "ear_shoulder_horizontal_distance": get_metric("ear_shoulder_horizontal_distance", SIDE_VIEWS, use_avg=True, default=0.0),
+        "foot_z_diff": get_metric("foot_z_diff", SIDE_VIEWS, use_avg=True), "shoulder_y_diff": get_metric("shoulder_y_diff", FRONT_BACK_VIEWS),
+        "ankle_x_diff": get_metric("ankle_x_diff", FRONT_BACK_VIEWS), "knee_x_diff": get_metric("knee_x_diff", FRONT_BACK_VIEWS)
+    }
 
-    # Apply clothing adjustment to relevant thresholds
-    eff_kyphosis_thresh = apply_clothing_adjustment(KYPHOSIS_THRESHOLD_SHOULDER_HIP_Z_DIFF)
-    eff_lordosis_thresh = apply_clothing_adjustment(LORDOSIS_THRESHOLD_HIP_KNEE_Z_DIFF)
-    eff_scoliosis_thresh = apply_clothing_adjustment(SCOLIOSIS_THRESHOLD_SHOULDER_Y_DIFF)
+    eff_kyphosis = apply_clothing_adjustment(thresholds['kyphosis'])
+    eff_lordosis = apply_clothing_adjustment(thresholds['lordosis'])
+    eff_scoliosis = apply_clothing_adjustment(thresholds['scoliosis'])
 
-    if "Kyphosis" in final_abnormalities and all(consolidated_metrics.get(k) is not None for k in ["shoulder_z", "hip_z"]): final_abnormalities["Kyphosis"] = (consolidated_metrics["shoulder_z"] - consolidated_metrics["hip_z"]) > eff_kyphosis_thresh
-    if "Lordosis" in final_abnormalities and all(consolidated_metrics.get(k) is not None for k in ["hip_z", "knee_z"]): final_abnormalities["Lordosis"] = (consolidated_metrics["hip_z"] - consolidated_metrics["knee_z"]) > eff_lordosis_thresh
-    if "Tech Neck" in final_abnormalities and consolidated_metrics.get("ear_shoulder_hip_angle") is not None and consolidated_metrics.get("ear_shoulder_horizontal_distance") is not None:
-        final_abnormalities["Tech Neck"] = (consolidated_metrics["ear_shoulder_hip_angle"] < TECH_NECK_MAX_ESH_ANGLE and consolidated_metrics["ear_shoulder_horizontal_distance"] > TECH_NECK_MIN_ESH_HORIZ_DIST)
-    if "Scoliosis" in final_abnormalities and consolidated_metrics.get("shoulder_y_diff") is not None: final_abnormalities["Scoliosis"] = consolidated_metrics["shoulder_y_diff"] > eff_scoliosis_thresh
-    if "Flat Feet" in final_abnormalities and consolidated_metrics.get("foot_z_diff") is not None: final_abnormalities["Flat Feet"] = consolidated_metrics["foot_z_diff"] < FLAT_FEET_THRESHOLD_FOOT_Z_DIFF
-    if "Gait Abnormalities" in final_abnormalities and consolidated_metrics.get("ankle_x_diff") is not None: final_abnormalities["Gait Abnormalities"] = consolidated_metrics["ankle_x_diff"] > GAIT_ABNORMALITIES_THRESHOLD_ANKLE_X_DIFF
-    if "Knock Knees" in final_abnormalities and all(consolidated_metrics.get(k) is not None for k in ["knee_x_diff", "ankle_x_diff"]) and consolidated_metrics.get("ankle_x_diff",0) != 0:
-        final_abnormalities["Knock Knees"] = consolidated_metrics["knee_x_diff"] < (consolidated_metrics.get("ankle_x_diff",0) * KNOCK_KNEES_KNEE_ANKLE_RATIO_THRESHOLD)
-    if "Bow Legs" in final_abnormalities and all(consolidated_metrics.get(k) is not None for k in ["knee_x_diff", "ankle_x_diff"]) and consolidated_metrics.get("knee_x_diff",0) != 0 : # and consolidated_metrics.get("ankle_x_diff", 0) != 0:
-         # knee_x_diff > ankle_x_diff * some_factor, or ankle_x_diff / knee_x_diff < some_ratio
-        if consolidated_metrics.get("ankle_x_diff", 0) == 0 and consolidated_metrics.get("knee_x_diff",0) > 0.05 : # Knees apart, ankles together
-             final_abnormalities["Bow Legs"] = True
-        elif consolidated_metrics.get("knee_x_diff",0) > 0 and consolidated_metrics.get("ankle_x_diff",0) / consolidated_metrics.get("knee_x_diff",1) < (1/BOW_LEGS_ANKLE_KNEE_RATIO_THRESHOLD) : # Original logic was ankle < knee * ratio, so ankle/knee < ratio
-             final_abnormalities["Bow Legs"] = True
+    if "Kyphosis" in final_abnormalities and all(consolidated_metrics.get(k) is not None for k in ["shoulder_z", "hip_z"]): final_abnormalities["Kyphosis"] = (consolidated_metrics["shoulder_z"] - consolidated_metrics["hip_z"]) > eff_kyphosis
+    if "Lordosis" in final_abnormalities and all(consolidated_metrics.get(k) is not None for k in ["hip_z", "knee_z"]): final_abnormalities["Lordosis"] = (consolidated_metrics["hip_z"] - consolidated_metrics["knee_z"]) > eff_lordosis
+    if "Tech Neck" in final_abnormalities and all(consolidated_metrics.get(k) is not None for k in ["ear_shoulder_hip_angle", "ear_shoulder_horizontal_distance"]):
+        final_abnormalities["Tech Neck"] = (consolidated_metrics["ear_shoulder_hip_angle"] < thresholds['tech_neck_angle'] and consolidated_metrics["ear_shoulder_horizontal_distance"] > thresholds['tech_neck_dist'])
+    if "Scoliosis" in final_abnormalities and consolidated_metrics.get("shoulder_y_diff") is not None: final_abnormalities["Scoliosis"] = consolidated_metrics["shoulder_y_diff"] > eff_scoliosis
+    if "Flat Feet" in final_abnormalities and consolidated_metrics.get("foot_z_diff") is not None: final_abnormalities["Flat Feet"] = consolidated_metrics["foot_z_diff"] < thresholds['flat_feet']
+    if "Gait Abnormalities" in final_abnormalities and consolidated_metrics.get("ankle_x_diff") is not None: final_abnormalities["Gait Abnormalities"] = consolidated_metrics["ankle_x_diff"] > thresholds['gait']
+    if "Knock Knees" in final_abnormalities and all(consolidated_metrics.get(k) is not None for k in ["knee_x_diff", "ankle_x_diff"]) and consolidated_metrics.get("ankle_x_diff",0) > 0:
+        final_abnormalities["Knock Knees"] = consolidated_metrics["knee_x_diff"] < (consolidated_metrics.get("ankle_x_diff",0) * thresholds['knock_knees'])
+    if "Bow Legs" in final_abnormalities and all(consolidated_metrics.get(k) is not None for k in ["knee_x_diff", "ankle_x_diff"]) and consolidated_metrics.get("knee_x_diff",0) > 0:
+        if consolidated_metrics.get("ankle_x_diff", 0) == 0 and consolidated_metrics.get("knee_x_diff",0) > 0.05: final_abnormalities["Bow Legs"] = True
+        elif consolidated_metrics.get("ankle_x_diff",0) > 0 and consolidated_metrics.get("ankle_x_diff",0) / consolidated_metrics.get("knee_x_diff",1) < (1/thresholds['bow_legs']): final_abnormalities["Bow Legs"] = True
 
-
-    if not primary_display_image and all_landmarked_images_pil: primary_display_image = next(iter(all_landmarked_images_pil.values()), None)
-    return final_abnormalities, consolidated_metrics, primary_display_image, all_landmarked_images_pil
+    primary_img = all_landmarked_images_pil.get('Left Side View') or next(iter(all_landmarked_images_pil.values()), None)
+    return final_abnormalities, consolidated_metrics, primary_img, all_landmarked_images_pil
 
 # --- Gemini API Integration ---
-def get_gemini_suggestions(abnormalities_detected_dict, student_name, age_group, gender): # Made synchronous
+def get_gemini_suggestions(abnormalities_detected_dict, student_name, age_group, gender):
     st.session_state.gemini_suggestions = None; st.session_state.gemini_suggestions_error = None
     detected_issues = [name for name, present in abnormalities_detected_dict.items() if present]
-    if not detected_issues:
-        return "No specific postural issues were detected. Focus on maintaining good overall posture and regular physical activity."
+    if not detected_issues: return "No specific postural issues were detected. Focus on maintaining good overall posture and regular physical activity."
 
     prompt = f"""
-    FitNurture has analyzed the posture for {student_name} (Age Group: {age_group}, Gender: {gender}) and identified the following potential postural issues: {', '.join(detected_issues)}.
-
-    Please provide personalized and actionable advice for {student_name} to help improve these conditions, keeping their age group ({age_group}) and gender ({gender}) in mind where appropriate for exercise suggestions or lifestyle tips.
-    Your response should be encouraging and easy to understand for a non-medical person (e.g., a parent).
-    Structure your response in Markdown format as follows:
-
+    FitNurture has analyzed the posture for {student_name} (Age Group: {age_group}, Gender: {gender}) and identified: {', '.join(detected_issues)}.
+    Provide personalized, actionable advice for {student_name} to improve these conditions, keeping their age group and gender in mind.
+    Your response should be encouraging, easy to understand, and structured in Markdown as follows:
     ### ✨ Personalized Posture Plan for {student_name} ✨
-
-    Based on the analysis, here are some suggestions to help improve posture:
-
+    Based on the analysis, here are some suggestions:
     #### Corrective Exercises & Stretches:
-    For each of the detected issues, list 2-3 specific exercises or stretches. Be very specific with exercise names.
-    For example:
-    **For Kyphosis:**
-    1.  **Wall Angels:** Brief description of how to perform it.
-    2.  **Prone Cobra:** Brief description.
-
-    **For Tech Neck:**
-    1.  **Chin Tucks:** Brief description.
-    ... and so on for other detected issues.
-
+    For each issue, list 2-3 specific exercises (e.g., **Wall Angels:** description).
     #### General Lifestyle Adjustments:
-    Provide 3-5 general lifestyle tips that can help with the detected issues or overall posture improvement.
-    For example:
-    1.  **Screen Time Management:** Explanation.
-    2.  **Ergonomic Setup (Study/Work Area):** Explanation.
-
+    Provide 3-5 general tips (e.g., **Screen Time Management:** explanation).
     #### Important Note:
-    Include a brief disclaimer that these suggestions are for informational purposes and a healthcare professional should be consulted for persistent issues or before starting any new exercise program.
-
-    Keep the language positive and supportive.
+    Include a disclaimer about this being informational advice and to consult a professional.
     """
     try:
-        chat_history = [{"role": "user", "parts": [{"text": prompt}]}]
-        payload = {"contents": chat_history}
-        api_key = "" # Provided by Canvas environment
+        payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
+        api_key = st.secrets.get("GEMINI_API_KEY", "") # Fallback to empty string for Canvas
         api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
         response = requests.post(api_url, headers={'Content-Type': 'application/json'}, json=payload, timeout=120)
         response.raise_for_status()
         result = response.json()
-        if (result.get('candidates') and result['candidates'][0].get('content') and
-                result['candidates'][0]['content'].get('parts') and
-                result['candidates'][0]['content']['parts'][0].get('text')):
+        if result.get('candidates') and result['candidates'][0].get('content'):
             suggestions = result['candidates'][0]['content']['parts'][0]['text']
             st.session_state.gemini_suggestions = suggestions; return suggestions
         else:
-            st.session_state.gemini_suggestions_error = f"Could not retrieve valid suggestions from the AI. Response structure unexpected. Raw: {str(result)[:500]}"
-            st.error(st.session_state.gemini_suggestions_error); return None
-    except requests.exceptions.RequestException as e:
-        st.session_state.gemini_suggestions_error = f"Network or API error: {e}"
-        st.error(st.session_state.gemini_suggestions_error); return None
+            st.session_state.gemini_suggestions_error = "Could not retrieve valid suggestions from the AI."; return None
     except Exception as e:
-        st.session_state.gemini_suggestions_error = f"An unexpected error occurred while fetching AI suggestions: {e}"
-        st.error(st.session_state.gemini_suggestions_error); return None
+        st.session_state.gemini_suggestions_error = f"An unexpected error occurred while fetching AI suggestions: {e}"; return None
 
 # --- Main Application UI ---
 child_name = st.text_input("Enter Child's Name (Mandatory):", key="child_name_input", value=st.session_state.get('current_entry',{}).get('Student Name',''))
 
-if child_name: # Only show subsequent inputs if name is present
+if child_name:
     st.session_state.selected_age_group = st.selectbox("Select Age Group:", options=AGE_GROUPS, key="age_group_select", index=AGE_GROUPS.index(st.session_state.selected_age_group))
     st.session_state.selected_gender = st.radio("Select Gender:", options=GENDERS, key="gender_radio", index=GENDERS.index(st.session_state.selected_gender), horizontal=True)
-    st.session_state.loose_clothing = st.checkbox("Subject is NOT wearing body-fitting clothes (this may affect accuracy for some measurements)", key="loose_clothing_checkbox", value=st.session_state.loose_clothing)
+    st.session_state.loose_clothing = st.checkbox("Subject is NOT wearing body-fitting clothes", key="loose_clothing_checkbox", value=st.session_state.loose_clothing)
     st.markdown("---")
 
 st.session_state.analysis_mode = st.radio("Select Analysis Mode:", ("Single View Analysis", "Multi-View Analysis (4 Views)"), key="analysis_mode_radio", on_change=clear_image_memory)
 st.markdown("### Select Abnormalities to Detect")
-select_all_current_value = all(st.session_state.selected_abnormalities.values())
-select_all_checkbox_val = st.checkbox("Select All", value=select_all_current_value, key="select_all_checkbox")
-if select_all_checkbox_val != select_all_current_value: # Check if the checkbox state changed
-    st.session_state.selected_abnormalities = {k: select_all_checkbox_val for k in POSTURE_RECOMMENDATIONS.keys()}
-    st.rerun()
-st.markdown("---")
+if st.checkbox("Select All", value=all(st.session_state.selected_abnormalities.values()), key="select_all_checkbox"):
+    if not all(st.session_state.selected_abnormalities.values()):
+        st.session_state.selected_abnormalities = {k: True for k in POSTURE_RECOMMENDATIONS.keys()}; st.rerun()
+else:
+    if all(st.session_state.selected_abnormalities.values()):
+        st.session_state.selected_abnormalities = {k: False for k in POSTURE_RECOMMENDATIONS.keys()}; st.rerun()
+
 cols_abnorm = st.columns(2)
 for i, (abn, val) in enumerate(st.session_state.selected_abnormalities.items()):
     with cols_abnorm[i % 2]: st.session_state.selected_abnormalities[abn] = st.checkbox(abn, value=val, key=f"cb_{abn}")
 st.markdown("---")
+
+# Helper function to create a number input
+def create_threshold_input(label, key, min_val, max_val, step, help_text, format_str="%.2f"):
+    """Creates a UI component with a label and a number input."""
+    st.session_state.thresholds[key] = st.number_input(
+        label=label,
+        min_value=float(min_val),
+        max_value=float(max_val),
+        value=float(st.session_state.thresholds.get(key, float(min_val))),
+        step=float(step),
+        key=f"num_input_{key}",
+        help=help_text,
+        format=format_str
+    )
+
+# Expandable section for threshold adjustments using the new input mode
+with st.expander("⚙️ Advanced: Adjust Detection Thresholds"):
+    st.info("Adjust these values to change the sensitivity of the detection. Higher values for differences/distances and lower values for angles generally make detection stricter.")
+
+    create_threshold_input("Kyphosis (Sh-Hip Z-Diff >)", 'kyphosis', 0.05, 0.4, 0.01, "Higher value requires more forward shoulder slouch.", "%.2f")
+    create_threshold_input("Lordosis (Hip-Knee Z-Diff >)", 'lordosis', 0.05, 0.4, 0.01, "Higher value requires more pronounced lower back curve.", "%.2f")
+
+    col_tn1, col_tn2 = st.columns(2)
+    with col_tn1:
+        create_threshold_input("Tech Neck (ESH Angle <)", 'tech_neck_angle', 45.0, 90.0, 0.5, "Lower value requires more forward head tilt.", "%.1f")
+    with col_tn2:
+        create_threshold_input("Tech Neck (ESH Horiz Dist >)", 'tech_neck_dist', 0.0, 0.2, 0.01, "Higher value requires ear to be more forward of shoulder.", "%.2f")
+
+    create_threshold_input("Scoliosis (Shoulder Y-Diff >)", 'scoliosis', 0.01, 0.2, 0.01, "Higher value requires a greater height difference between shoulders.", "%.2f")
+    create_threshold_input("Flat Feet (Foot Arch <)", 'flat_feet', 0.01, 0.15, 0.01, "Lower value requires a flatter foot arch.", "%.2f")
+    create_threshold_input("Gait Abnormality (Ankle X-Diff >)", 'gait', 0.1, 0.5, 0.01, "Higher value means feet are wider apart.", "%.2f")
+
+    col_kk, col_bl = st.columns(2)
+    with col_kk:
+        create_threshold_input("Knock Knees (Knee/Ankle Ratio <)", 'knock_knees', 0.05, 0.95, 0.01, "Lower value means knees must be much closer than ankles.", "%.2f")
+    with col_bl:
+        create_threshold_input("Bow Legs (Knee/Ankle Ratio >)", 'bow_legs', 1.1, 3.0, 0.05, "Higher value means knees must be much wider than ankles.", "%.2f")
+
+    if st.button("Reset Thresholds to Default", key="reset_thresh_btn"):
+        st.session_state.thresholds = DEFAULT_THRESHOLDS.copy()
+        st.rerun()
+
+st.markdown("---")
 st.session_state.input_mode = st.radio("Choose Input Method:", ("Upload Image", "Use Camera"), key="input_mode_radio", on_change=clear_image_memory)
 
+# ... (rest of the script for image input, analysis trigger, etc.) ...
 single_image_data_pil, multi_images_data_pil = None, {view: None for view in VIEWS_SEQUENCE}
 if child_name:
     if st.session_state.analysis_mode == "Single View Analysis":
@@ -474,10 +464,10 @@ if child_name:
     else: # Multi-View
         st.info("Provide images for all four views.")
         if st.session_state.input_mode == "Upload Image":
-            cols_up = st.columns(min(len(VIEWS_SEQUENCE), 2)) # Max 2 columns for uploaders
+            cols_up = st.columns(min(len(VIEWS_SEQUENCE), 2))
             all_up_local = True
             for i, vn in enumerate(VIEWS_SEQUENCE):
-                with cols_up[i % 2]: # Distribute into 2 columns
+                with cols_up[i % 2]:
                     uf_multi = st.file_uploader(f"Upload {vn}", type=["jpg","png","jpeg"], key=f"upload_{vn.lower().replace(' ','_')}")
                     if uf_multi: st.session_state[f"uploaded_image_{vn.lower().replace(' ','_')}"] = optimize_image(Image.open(uf_multi))
                     multi_images_data_pil[vn] = st.session_state.get(f"uploaded_image_{vn.lower().replace(' ','_')}")
@@ -490,13 +480,13 @@ if child_name:
                 vtc = VIEWS_SEQUENCE[cs]
                 st.markdown(f"**Taking photo for: {vtc}**")
                 if cs > 0: st.info(f"Photo for {VIEWS_SEQUENCE[cs-1]} captured. Turn for {vtc}.")
-                cp = st.camera_input(f"Capture {vtc}", key=st.session_state.camera_input_key_multi) # Use dynamic key
+                cp = st.camera_input(f"Capture {vtc}", key=st.session_state.camera_input_key_multi)
                 if cp:
                     st.session_state.captured_images_multi[vtc] = optimize_image(Image.fromarray(cv2.cvtColor(cv2.imdecode(np.asarray(bytearray(cp.read()),dtype=np.uint8),cv2.IMREAD_COLOR),cv2.COLOR_BGR2RGB)))
                     st.session_state.capture_stage += 1
-                    st.session_state.camera_input_key_multi = f"camera_multi_{st.session_state.capture_stage}" # Regenerate key
+                    st.session_state.camera_input_key_multi = f"camera_multi_{st.session_state.capture_stage}"
                     st.rerun()
-            else: st.session_state.all_multi_images_captured = True; st.success("All 4 views captured!"); multi_images_data_pil = st.session_state.captured_images_multi # Use captured images
+            else: st.session_state.all_multi_images_captured = True; st.success("All 4 views captured!"); multi_images_data_pil = st.session_state.captured_images_multi
             if any(st.session_state.captured_images_multi.values()):
                 st.markdown("---"); st.write("Captured Images Preview:"); cols_rev = st.columns(len(VIEWS_SEQUENCE))
                 for i, vn_rev in enumerate(VIEWS_SEQUENCE):
@@ -506,24 +496,21 @@ if child_name:
             st.markdown("---")
 else: st.warning("Please enter the child's name and select their age group and gender to proceed.")
 
-# --- Analysis Trigger ---
-btn_label = "Analyze All 4 Views" if st.session_state.analysis_mode == "Multi-View Analysis (4 Views)" else "Analyze Posture"
+btn_label = "Analyze Posture"
 enable_btn = bool(child_name and ( (st.session_state.analysis_mode == "Single View Analysis" and single_image_data_pil) or \
                                 (st.session_state.analysis_mode == "Multi-View Analysis (4 Views)" and \
                                  (st.session_state.all_multi_images_uploaded or st.session_state.all_multi_images_captured) and \
                                  all(multi_images_data_pil.get(v) or st.session_state.captured_images_multi.get(v) for v in VIEWS_SEQUENCE) ) ) )
 
 if st.button(btn_label, key="analyze_button", disabled=not enable_btn):
-    st.session_state.processing_done = False; st.session_state.gemini_suggestions = None; st.session_state.gemini_suggestions_error = None
+    st.session_state.processing_done = False; st.session_state.gemini_suggestions = None
     sid = st.session_state.get("current_student_id") or f"FN-{random.randint(1000,9999)}"
     st.session_state.current_student_id = sid
-    base_entry_info = {
-        "Student ID": sid, "Student Name": child_name,
-        "Age_Group": st.session_state.selected_age_group,
-        "Gender": st.session_state.selected_gender,
-        "Loose_Clothing": st.session_state.loose_clothing,
-        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
+    base_entry_info = {"Student ID": sid, "Student Name": child_name, "Age_Group": st.session_state.selected_age_group,
+                       "Gender": st.session_state.selected_gender, "Loose_Clothing": st.session_state.loose_clothing,
+                       "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    
+    current_thresholds = st.session_state.thresholds
 
     if st.session_state.analysis_mode == "Single View Analysis":
         if single_image_data_pil:
@@ -532,121 +519,97 @@ if st.button(btn_label, key="analyze_button", disabled=not enable_btn):
             st.session_state.all_landmark_images["Single View"] = landmarked_img
             current_abnormalities = {k: False for k,v in st.session_state.selected_abnormalities.items() if v}
 
-            eff_kyphosis_thresh = apply_clothing_adjustment(KYPHOSIS_THRESHOLD_SHOULDER_HIP_Z_DIFF)
-            eff_lordosis_thresh = apply_clothing_adjustment(LORDOSIS_THRESHOLD_HIP_KNEE_Z_DIFF)
-            eff_scoliosis_thresh = apply_clothing_adjustment(SCOLIOSIS_THRESHOLD_SHOULDER_Y_DIFF)
+            eff_kyphosis = apply_clothing_adjustment(current_thresholds['kyphosis'])
+            eff_lordosis = apply_clothing_adjustment(current_thresholds['lordosis'])
+            eff_scoliosis = apply_clothing_adjustment(current_thresholds['scoliosis'])
 
-            if "Tech Neck" in current_abnormalities and metrics.get("ear_shoulder_hip_angle") is not None and metrics.get("ear_shoulder_horizontal_distance") is not None:
-                current_abnormalities["Tech Neck"] = (metrics["ear_shoulder_hip_angle"] < TECH_NECK_MAX_ESH_ANGLE and metrics["ear_shoulder_horizontal_distance"] > TECH_NECK_MIN_ESH_HORIZ_DIST)
-            if "Kyphosis" in current_abnormalities and metrics.get("shoulder_z") is not None and metrics.get("hip_z") is not None: current_abnormalities["Kyphosis"] = (metrics["shoulder_z"] - metrics["hip_z"]) > eff_kyphosis_thresh
-            if "Lordosis" in current_abnormalities and metrics.get("hip_z") is not None and metrics.get("knee_z") is not None: current_abnormalities["Lordosis"] = (metrics["hip_z"] - metrics["knee_z"]) > eff_lordosis_thresh
-            if "Flat Feet" in current_abnormalities and metrics.get("foot_z_diff") is not None: current_abnormalities["Flat Feet"] = metrics["foot_z_diff"] < FLAT_FEET_THRESHOLD_FOOT_Z_DIFF
-            # For single view, Scoliosis, Gait, Knock Knees, Bow Legs are less reliable but can be attempted if front/back view is assumed or metrics are available
-            if "Scoliosis" in current_abnormalities and metrics.get("shoulder_y_diff") is not None: current_abnormalities["Scoliosis"] = metrics["shoulder_y_diff"] > eff_scoliosis_thresh
-            if "Gait Abnormalities" in current_abnormalities and metrics.get("ankle_x_diff") is not None: current_abnormalities["Gait Abnormalities"] = metrics["ankle_x_diff"] > GAIT_ABNORMALITIES_THRESHOLD_ANKLE_X_DIFF
-            if "Knock Knees" in current_abnormalities and metrics.get("knee_x_diff") is not None and metrics.get("ankle_x_diff") is not None and metrics.get("ankle_x_diff",0) != 0:
-                current_abnormalities["Knock Knees"] = metrics["knee_x_diff"] < (metrics.get("ankle_x_diff",0) * KNOCK_KNEES_KNEE_ANKLE_RATIO_THRESHOLD)
-            if "Bow Legs" in current_abnormalities and metrics.get("knee_x_diff") is not None and metrics.get("ankle_x_diff") is not None and metrics.get("knee_x_diff",0) !=0:
-                if metrics.get("ankle_x_diff", 0) == 0 and metrics.get("knee_x_diff",0) > 0.05 : current_abnormalities["Bow Legs"] = True
-                elif metrics.get("knee_x_diff",0) > 0 and metrics.get("ankle_x_diff",0) / metrics.get("knee_x_diff",1) < (1/BOW_LEGS_ANKLE_KNEE_RATIO_THRESHOLD) : current_abnormalities["Bow Legs"] = True
-
+            if "Tech Neck" in current_abnormalities and all(metrics.get(k) is not None for k in ["ear_shoulder_hip_angle", "ear_shoulder_horizontal_distance"]):
+                current_abnormalities["Tech Neck"] = (metrics["ear_shoulder_hip_angle"] < current_thresholds['tech_neck_angle'] and metrics["ear_shoulder_horizontal_distance"] > current_thresholds['tech_neck_dist'])
+            if "Kyphosis" in current_abnormalities and all(metrics.get(k) is not None for k in ["shoulder_z", "hip_z"]): current_abnormalities["Kyphosis"] = (metrics["shoulder_z"] - metrics["hip_z"]) > eff_kyphosis
+            if "Lordosis" in current_abnormalities and all(metrics.get(k) is not None for k in ["hip_z", "knee_z"]): current_abnormalities["Lordosis"] = (metrics["hip_z"] - metrics["knee_z"]) > eff_lordosis
+            if "Flat Feet" in current_abnormalities and metrics.get("foot_z_diff") is not None: current_abnormalities["Flat Feet"] = metrics["foot_z_diff"] < current_thresholds['flat_feet']
+            if "Scoliosis" in current_abnormalities and metrics.get("shoulder_y_diff") is not None: current_abnormalities["Scoliosis"] = metrics["shoulder_y_diff"] > eff_scoliosis
+            if "Gait Abnormalities" in current_abnormalities and metrics.get("ankle_x_diff") is not None: current_abnormalities["Gait Abnormalities"] = metrics["ankle_x_diff"] > current_thresholds['gait']
+            if "Knock Knees" in current_abnormalities and all(metrics.get(k) is not None for k in ["knee_x_diff", "ankle_x_diff"]) and metrics.get("ankle_x_diff",0) > 0:
+                current_abnormalities["Knock Knees"] = metrics["knee_x_diff"] < (metrics.get("ankle_x_diff",0) * current_thresholds['knock_knees'])
+            if "Bow Legs" in current_abnormalities and all(metrics.get(k) is not None for k in ["knee_x_diff", "ankle_x_diff"]) and metrics.get("knee_x_diff",0) > 0:
+                if metrics.get("ankle_x_diff", 0) == 0 and metrics.get("knee_x_diff",0) > 0.05: current_abnormalities["Bow Legs"] = True
+                elif metrics.get("ankle_x_diff",0) > 0 and metrics.get("ankle_x_diff",0) / metrics.get("knee_x_diff",1) < (1/current_thresholds['bow_legs']): current_abnormalities["Bow Legs"] = True
 
             st.session_state.abnormalities = current_abnormalities
-            entry_metrics = { "shoulder_z": metrics.get("shoulder_z"), "hip_z": metrics.get("hip_z"), "knee_z": metrics.get("knee_z"), "ear_shoulder_hip_angle": metrics.get("ear_shoulder_hip_angle"), "ear_shoulder_horizontal_distance": metrics.get("ear_shoulder_horizontal_distance"), "shoulder_y_diff": metrics.get("shoulder_y_diff"), "foot_z_diff": metrics.get("foot_z_diff"), "ankle_x_diff": metrics.get("ankle_x_diff"), "knee_x_diff": metrics.get("knee_x_diff") }
-            st.session_state.current_entry = {**base_entry_info, **current_abnormalities, **entry_metrics}
-            for ab_key in POSTURE_RECOMMENDATIONS.keys(): # Ensure all abnormality keys are present
-                if ab_key not in st.session_state.current_entry: st.session_state.current_entry[ab_key] = False
+            st.session_state.current_entry = {**base_entry_info, **current_abnormalities, **metrics}
             st.session_state.processing_done = True
-    elif st.session_state.analysis_mode == "Multi-View Analysis (4 Views)":
-        images_for_analysis_final = multi_images_data_pil if st.session_state.all_multi_images_uploaded else st.session_state.captured_images_multi
-        if all(images_for_analysis_final.get(view) for view in VIEWS_SEQUENCE):
-            final_abnormalities, consolidated_metrics, primary_display_img, all_landmarked_imgs_pil = \
-                analyze_multi_view_data(images_for_analysis_final, st.session_state.selected_abnormalities)
-            st.session_state.abnormalities = final_abnormalities
-            st.session_state.landmark_image = primary_display_img # For potential single display later
-            st.session_state.all_landmark_images = all_landmarked_imgs_pil
-            st.session_state.current_entry = {**base_entry_info, **final_abnormalities, **consolidated_metrics}
-            for ab_key in POSTURE_RECOMMENDATIONS.keys(): # Ensure all abnormality keys are present
-                if ab_key not in st.session_state.current_entry: st.session_state.current_entry[ab_key] = False
+    else:
+        images_for_analysis = multi_images_data_pil if st.session_state.all_multi_images_uploaded else st.session_state.captured_images_multi
+        if all(images_for_analysis.get(v) for v in VIEWS_SEQUENCE):
+            final_abns, cons_metrics, p_img, all_l_imgs = analyze_multi_view_data(images_for_analysis, st.session_state.selected_abnormalities, current_thresholds)
+            st.session_state.abnormalities = final_abns
+            st.session_state.landmark_image = p_img
+            st.session_state.all_landmark_images = all_l_imgs
+            st.session_state.current_entry = {**base_entry_info, **final_abns, **cons_metrics}
             st.session_state.processing_done = True
-        else: st.error("Not all images for multi-view analysis are available. Please ensure all 4 views are provided.")
+        else: st.error("Not all images for multi-view analysis are available.")
 
-# --- Helper function to get abnormality reason string ---
-def get_abnormality_reason_string(condition_name, metrics_dict):
+def get_abnormality_reason_string(condition_name, metrics_dict, thresholds):
     reason = ""
-    # Use base thresholds for display, PDF will note if adjustment was made
-    if condition_name == "Kyphosis" and metrics_dict.get("shoulder_z") is not None and metrics_dict.get("hip_z") is not None:
-        diff = metrics_dict["shoulder_z"] - metrics_dict["hip_z"]
-        reason = f"(Sh-Hip Z: {diff:.2f} > {KYPHOSIS_THRESHOLD_SHOULDER_HIP_Z_DIFF})"
-    elif condition_name == "Lordosis" and metrics_dict.get("hip_z") is not None and metrics_dict.get("knee_z") is not None:
-        diff = metrics_dict["hip_z"] - metrics_dict["knee_z"]
-        reason = f"(Hip-Knee Z: {diff:.2f} > {LORDOSIS_THRESHOLD_HIP_KNEE_Z_DIFF})"
-    elif condition_name == "Tech Neck" and metrics_dict.get("ear_shoulder_hip_angle") is not None and metrics_dict.get("ear_shoulder_horizontal_distance") is not None:
-        angle_val = metrics_dict.get("ear_shoulder_hip_angle", 90)
-        dist_val = metrics_dict.get("ear_shoulder_horizontal_distance", 0)
-        reason = f"(ESH Angle: {angle_val:.1f}° < {TECH_NECK_MAX_ESH_ANGLE}°, ESH Horiz Dist: {dist_val:.2f} > {TECH_NECK_MIN_ESH_HORIZ_DIST})"
-    elif condition_name == "Scoliosis" and metrics_dict.get("shoulder_y_diff") is not None:
-        reason = f"(Shoulder Y-diff: {metrics_dict['shoulder_y_diff']:.2f} > {SCOLIOSIS_THRESHOLD_SHOULDER_Y_DIFF})"
-    elif condition_name == "Flat Feet" and metrics_dict.get("foot_z_diff") is not None:
-        reason = f"(Foot Z-diff: {metrics_dict['foot_z_diff']:.2f} < {FLAT_FEET_THRESHOLD_FOOT_Z_DIFF})"
-    elif condition_name == "Gait Abnormalities" and metrics_dict.get("ankle_x_diff") is not None:
-        reason = f"(Ankle X-diff: {metrics_dict['ankle_x_diff']:.2f} > {GAIT_ABNORMALITIES_THRESHOLD_ANKLE_X_DIFF})"
-    elif condition_name == "Knock Knees" and metrics_dict.get("knee_x_diff") is not None and metrics_dict.get("ankle_x_diff") is not None:
-        reason = f"(Knee X-diff: {metrics_dict['knee_x_diff']:.2f}, Ankle X-diff: {metrics_dict['ankle_x_diff']:.2f})" # Ratio logic applied in detection
-    elif condition_name == "Bow Legs" and metrics_dict.get("knee_x_diff") is not None and metrics_dict.get("ankle_x_diff") is not None:
-        reason = f"(Knee X-diff: {metrics_dict['knee_x_diff']:.2f}, Ankle X-diff: {metrics_dict['ankle_x_diff']:.2f})" # Ratio logic applied in detection
+    try:
+        if condition_name == "Kyphosis" and all(k in metrics_dict for k in ["shoulder_z", "hip_z"]):
+            reason = f"(Sh-Hip Z: {metrics_dict['shoulder_z'] - metrics_dict['hip_z']:.2f} > {thresholds['kyphosis']})"
+        elif condition_name == "Lordosis" and all(k in metrics_dict for k in ["hip_z", "knee_z"]):
+            reason = f"(Hip-Knee Z: {metrics_dict['hip_z'] - metrics_dict['knee_z']:.2f} > {thresholds['lordosis']})"
+        elif condition_name == "Tech Neck" and all(k in metrics_dict for k in ["ear_shoulder_hip_angle", "ear_shoulder_horizontal_distance"]):
+            reason = f"(Angle: {metrics_dict['ear_shoulder_hip_angle']:.1f}° < {thresholds['tech_neck_angle']}°, Dist: {metrics_dict['ear_shoulder_horizontal_distance']:.2f} > {thresholds['tech_neck_dist']})"
+        elif condition_name == "Scoliosis" and "shoulder_y_diff" in metrics_dict:
+            reason = f"(Shoulder Y-diff: {metrics_dict['shoulder_y_diff']:.2f} > {thresholds['scoliosis']})"
+        elif condition_name == "Flat Feet" and "foot_z_diff" in metrics_dict:
+            reason = f"(Foot Arch: {metrics_dict['foot_z_diff']:.2f} < {thresholds['flat_feet']})"
+        elif condition_name == "Gait Abnormalities" and "ankle_x_diff" in metrics_dict:
+            reason = f"(Ankle X-diff: {metrics_dict['ankle_x_diff']:.2f} > {thresholds['gait']})"
+        elif condition_name in ["Knock Knees", "Bow Legs"] and all(k in metrics_dict for k in ["knee_x_diff", "ankle_x_diff"]):
+            reason = f"(Knee X: {metrics_dict['knee_x_diff']:.2f}, Ankle X: {metrics_dict['ankle_x_diff']:.2f})"
+    except (KeyError, TypeError): reason = "(metric data missing)"
     return reason
 
-# --- Display Results, Save, PDF ---
-if st.session_state.processing_done and st.session_state.get("current_entry") and st.session_state.current_entry.get("Student ID"):
+if st.session_state.processing_done and st.session_state.get("current_entry"):
     st.success("Analysis Complete!")
     if st.session_state.analysis_mode == "Multi-View Analysis (4 Views)" and st.session_state.all_landmark_images:
         st.write("### Processed Images from All Views:")
-        cols_processed_imgs = st.columns(min(len(VIEWS_SEQUENCE), 4))
-        for i, view_name in enumerate(VIEWS_SEQUENCE):
-            if view_name in st.session_state.all_landmark_images and st.session_state.all_landmark_images[view_name]:
-                with cols_processed_imgs[i % 4]:
-                    st.image(st.session_state.all_landmark_images[view_name], caption=f"Processed: {view_name}", width=150)
+        cols_proc_imgs = st.columns(min(len(VIEWS_SEQUENCE), 4))
+        for i, vn in enumerate(VIEWS_SEQUENCE):
+            if vn in st.session_state.all_landmark_images and st.session_state.all_landmark_images[vn]:
+                with cols_proc_imgs[i % 4]: st.image(st.session_state.all_landmark_images[vn], caption=f"Processed: {vn}", width=150)
         st.markdown("---")
-    elif st.session_state.analysis_mode == "Single View Analysis" and st.session_state.landmark_image:
-        st.image(st.session_state.landmark_image, caption="Landmarked Image (Single View)", use_container_width=True)
+    elif st.session_state.landmark_image: st.image(st.session_state.landmark_image, caption="Landmarked Image", use_container_width=True)
 
-    display_abnormalities = st.session_state.get("abnormalities", {})
-    current_metrics_for_display = st.session_state.current_entry
-    if display_abnormalities:
-        st.write(f"### Abnormality Detection for {st.session_state.current_entry['Student Name']} (ID: {st.session_state.current_entry['Student ID']}):")
-        for cond, pres in display_abnormalities.items():
-            reason_str = get_abnormality_reason_string(cond, current_metrics_for_display) if pres else ""
-            st.markdown(f"- {cond}: {'**Present**' if pres else 'Not Present'} {reason_str}")
-    else: st.info("No abnormalities selected/detected based on the analysis.")
+    current_abns_display = st.session_state.get("abnormalities", {})
+    if current_abns_display:
+        st.write(f"### Abnormality Detection for {st.session_state.current_entry['Student Name']}:")
+        for cond, pres in current_abns_display.items():
+            reason = get_abnormality_reason_string(cond, st.session_state.current_entry, st.session_state.thresholds) if pres else ""
+            st.markdown(f"- {cond}: {'**Present**' if pres else 'Not Present'} {reason}")
+    else: st.info("No abnormalities detected.")
 
     st.markdown("---")
     st.markdown('<div class="gemini-button">', unsafe_allow_html=True)
     if st.button("✨ Get AI Exercise & Lifestyle Tips", key="gemini_tips_button"):
-        with st.spinner("✨ Our AI is crafting personalized tips for you..."):
-            _ = get_gemini_suggestions(
-                st.session_state.abnormalities,
-                st.session_state.current_entry['Student Name'],
-                st.session_state.current_entry['Age_Group'],
-                st.session_state.current_entry['Gender']
-            )
+        with st.spinner("✨ Our AI is crafting personalized tips..."):
+            get_gemini_suggestions(st.session_state.abnormalities, st.session_state.current_entry['Student Name'],
+                                   st.session_state.current_entry['Age_Group'], st.session_state.current_entry['Gender'])
     st.markdown('</div>', unsafe_allow_html=True)
 
-    if st.session_state.gemini_suggestions:
-        st.markdown("### ✨ AI-Powered Suggestions"); st.markdown(st.session_state.gemini_suggestions)
-    elif st.session_state.gemini_suggestions_error:
-        st.error(f"Could not fetch AI suggestions: {st.session_state.gemini_suggestions_error}")
+    if st.session_state.gemini_suggestions: st.markdown("### ✨ AI-Powered Suggestions"); st.markdown(st.session_state.gemini_suggestions)
+    elif st.session_state.gemini_suggestions_error: st.error(f"Could not fetch AI suggestions: {st.session_state.gemini_suggestions_error}")
+    
     st.markdown("---")
 
     col1_actions, col2_actions = st.columns(2)
     with col1_actions:
-        if st.button("💾 Save Result Locally", key="save_result_button_main"):
-            if st.session_state.gemini_suggestions: st.session_state.current_entry["Gemini_Suggestions"] = st.session_state.gemini_suggestions
-            st.session_state.records.append(st.session_state.current_entry.copy()) # Save a copy
+        if st.button("💾 Save Result Locally", key="save_result_button"):
+            st.session_state.current_entry["Gemini_Suggestions"] = st.session_state.gemini_suggestions
+            st.session_state.records.append(st.session_state.current_entry.copy())
             st.success(f"Result for {st.session_state.current_entry['Student ID']} saved locally!")
-            # Don't delete current_student_id here, allow multiple saves/PDFs for same student if needed before reset
     with col2_actions:
-        if st.button("📄 Generate PDF Report", key="generate_pdf_button_main"):
+        if st.button("📄 Generate PDF Report", key="generate_pdf_button"):
             try:
                 data_pdf = st.session_state.current_entry
                 abn_pdf = st.session_state.abnormalities
@@ -805,106 +768,36 @@ if st.session_state.processing_done and st.session_state.get("current_entry") an
                 if not pdf_bytes_out: st.error("Critical PDF Error: Output from FPDF is empty.")
                 else:
                     st.success("PDF Report Generated!"); st.download_button(label="📥 Download Report PDF",data=pdf_bytes_out,file_name=f"posture_report_{data_pdf.get('Student ID', 'report') if data_pdf else 'report'}.pdf",mime="application/pdf",key="download_full_pdf_button")
-            except Exception as e: st.error(f"Error during PDF generation process: {e}\n{traceback.format_exc()}")
+            except Exception as e:
+                st.error(f"Error during PDF generation process: {e}\n{traceback.format_exc()}")
+
+
+          
+
 
 # --- View Data Table and Cloud Upload ---
 st.markdown("---"); st.subheader("📊 View Locally Saved Records")
 if st.session_state.records:
-    records_per_page = 10
-    if 'current_page_local_records' not in st.session_state: st.session_state.current_page_local_records = 0
-
-    all_keys = set()
-    for record in st.session_state.records: all_keys.update(record.keys())
-    df_cols_ordered = ["Student ID", "Student Name", "Age_Group", "Gender", "Loose_Clothing", "Timestamp"] + \
-                      [k.replace(' ', '_').replace('-', '_') for k in POSTURE_RECOMMENDATIONS.keys()] + \
-                      ["shoulder_z", "hip_z", "knee_z", "ear_shoulder_hip_angle", "ear_shoulder_horizontal_distance", "shoulder_y_diff", "foot_z_diff", "ankle_x_diff", "knee_x_diff"] + \
-                      ["Gemini_Suggestions"] 
-    df_cols_final = [col for col in df_cols_ordered if col in all_keys]
-    display_records_df_full = pd.DataFrame(st.session_state.records, columns=df_cols_final)
-
-    search_term = st.text_input("🔍 Search by Student Name or ID in local records", key="search_local")
-    if search_term:
-        display_records_df_filtered = display_records_df_full[
-            display_records_df_full['Student Name'].astype(str).str.contains(search_term, case=False, na=False) |
-            display_records_df_full['Student ID'].astype(str).str.contains(search_term, case=False, na=False)
-        ]
-    else:
-        display_records_df_filtered = display_records_df_full
-
-    total_filtered_records = len(display_records_df_filtered)
-    total_filtered_pages = (total_filtered_records + records_per_page - 1) // records_per_page if total_filtered_records > 0 else 0
-
-    if total_filtered_pages > 0:
-        current_page_display = st.session_state.current_page_local_records + 1 # 1-based for display
-        selected_page_display = st.number_input(
-            "Select Page", 
-            min_value=1, 
-            max_value=total_filtered_pages, 
-            value=current_page_display,
-            key="local_records_page_selector_num_input"
-        )
-        st.session_state.current_page_local_records = selected_page_display - 1 # Convert back to 0-based
-    else: 
-         st.session_state.current_page_local_records = 0
-
-    start_idx = st.session_state.current_page_local_records * records_per_page
-    end_idx = start_idx + records_per_page
-    if not display_records_df_filtered.empty: st.dataframe(display_records_df_filtered.iloc[start_idx:end_idx], use_container_width=True)
-    elif search_term: st.info("No local records match your search criteria.")
-    else: st.info("No local records to display.")
-    
-    @st.cache_data
-    def convert_all_to_csv(records_list_cache):
-        if not records_list_cache: return b""
-        all_keys_csv = set()
-        for rec_csv in records_list_cache: all_keys_csv.update(rec_csv.keys())
-        df_cols_final_csv = [col for col in df_cols_ordered if col in all_keys_csv] # Use same ordered cols
-        return pd.DataFrame(records_list_cache, columns=df_cols_final_csv).to_csv(index=False).encode("utf-8")
-
-    if st.session_state.records:
-        csv_all = convert_all_to_csv(list(st.session_state.records)) 
-        st.download_button("📥 Download All Local Records (CSV)", data=csv_all, file_name="all_posture_records.csv", mime="text/csv", key="download_all_csv")
-else: st.info("No records saved locally yet.")
+    st.dataframe(pd.DataFrame(st.session_state.records))
 
 st.markdown("---"); st.subheader("☁️ Cloud Data Storage")
-if st.session_state.cloud_upload_status:
-    status_type = st.session_state.cloud_upload_status.get("type", "info"); status_message = st.session_state.cloud_upload_status.get("message", "")
-    if status_type == "success": st.success(status_message)
-    elif status_type == "error": st.error(status_message)
-    elif status_type == "warning": st.warning(status_message)
-    else: st.info(status_message)
-
 if st.session_state.get('records'):
     if st.button("⬆️ Upload All Saved Records to Cloud", key="upload_to_azure_button"):
-        st.session_state.cloud_upload_status = None
-        with st.spinner("Connecting to database and uploading records..."):
-            conn_result = get_db_connection()
-            if conn_result.get("type") == "success":
-                conn = conn_result["connection"]
-                records_for_sql = []
-                for rec_sql in st.session_state.records: 
-                    sql_rec_item = {k: v for k, v in rec_sql.items() if k != "Gemini_Suggestions"}
-                    records_for_sql.append(sql_rec_item)
-                upload_status = upload_records_to_sql(conn, records_for_sql)
-                st.session_state.cloud_upload_status = upload_status
-                try: conn.close()
-                except pyodbc.Error as e_close: 
-                    if st.session_state.cloud_upload_status and st.session_state.cloud_upload_status.get("type") == "error":
-                        st.session_state.cloud_upload_status["message"] += f" (Also, minor error closing DB connection: {e_close})"
-                    else: st.session_state.cloud_upload_status = {"type": "warning", "message": f"Minor error closing DB connection: {e_close}"}
-                st.rerun()
-            else: st.session_state.cloud_upload_status = conn_result; st.rerun()
-else: st.info("No records saved locally to upload to Azure SQL.")
+        with st.spinner("Connecting to the cloud..."):
+            conn_details = get_db_connection()
+        if conn_details["type"] == "success":
+            st.success("Successfully connected to the database.")
+            conn = conn_details["connection"]
+            with st.spinner("Uploading records..."):
+                upload_status = upload_records_to_sql(conn, st.session_state.records)
+            if upload_status["type"] == "success":
+                st.success(upload_status["message"])
+                st.session_state.records = [] # Clear local records after successful upload
+            else:
+                st.error(upload_status["message"])
+            try: conn.close()
+            except pyodbc.Error: pass
+        else:
+            st.error(conn_details["message"])
 
-st.markdown("---")
-button_col1_manual, button_col2_manual, button_col3_manual = st.columns([2, 1, 2])
-with button_col2_manual:
-    manual_path = os.path.join("assets", "FitNurture_User_Manual.pdf")
-    if os.path.exists(manual_path):
-        try:
-            with open(manual_path, "rb") as f_manual:
-                st.download_button(label="Download User Manual (PDF)", data=f_manual.read(), file_name="FitNurture_User_Manual.pdf", mime="application/pdf", key="download_manual_button")
-        except Exception as e_manual: st.warning(f"Could not read user manual: {e_manual}") 
-    else: st.warning("User manual PDF not found in assets folder (expected: assets/FitNurture_User_Manual.pdf).")
-
-.st.markdown(f"""<div class="copyright-footer">© Copyright {datetime.now().year} FutureNurture | <a href="http://www.futurenurture.in" target="_blank">www.futurenurture.in</a></div>""", unsafe_allow_html=True)
+st.markdown(f"""<div class="copyright-footer">© Copyright {datetime.now().year} FutureNurture | <a href="http://www.futurenurture.in" target="_blank">www.futurenurture.in</a></div>""", unsafe_allow_html=True)
