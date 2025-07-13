@@ -8,6 +8,22 @@ st.set_page_config(
     layout="wide"
 )
 
+# --- Scroll to top logic ---
+if 'scroll_to_top' not in st.session_state:
+    st.session_state.scroll_to_top = False
+
+if st.session_state.scroll_to_top:
+    st.components.v1.html(
+        """
+        <script>
+            window.parent.document.body.scrollTop = 0;
+            window.parent.document.documentElement.scrollTop = 0;
+        </script>
+        """,
+        height=0
+    )
+    st.session_state.scroll_to_top = False
+
 import cv2
 import numpy as np
 import mediapipe as mp
@@ -34,17 +50,17 @@ TEXT_THICKNESS = 1
 HIGHLIGHT_COLOR_BGR = (0, 0, 255)
 TEXT_BG_COLOR_BGR = (255, 255, 255)
 
-# Original/Default Thresholds
+# Original/Default Thresholds (Adjusted to be stricter)
 DEFAULT_THRESHOLDS = {
-    "kyphosis": 0.15,
-    "lordosis": 0.10,
-    "tech_neck_angle": 75.0, # Angle should be LESS than this
-    "tech_neck_dist": 0.08, # Ear should be MORE forward than this
-    "scoliosis": 0.05,
-    "flat_feet": 0.05, # Arch height (z-diff) LESS than this
-    "gait": 0.25,
-    "knock_knees": 0.10, # Ratio of knee_x_diff to ankle_x_diff
-    "bow_legs": 1.5, # Ratio of knee_x_diff to ankle_x_diff
+    "kyphosis": 0.12,        # Stricter: Lower value flags less severe slouch. Default: 0.15
+    "lordosis": 0.08,        # Stricter: Lower value flags less severe curve. Default: 0.10
+    "tech_neck_angle": 80.0, # Stricter: Higher value flags less severe tilt. Default: 75.0
+    "tech_neck_dist": 0.06,  # Stricter: Lower value flags smaller forward distance. Default: 0.08
+    "scoliosis": 0.04,       # Stricter: Lower value flags smaller shoulder height difference. Default: 0.05
+    "flat_feet": 0.06,       # Stricter: Higher value flags less flat arches. Default: 0.05
+    "gait": 0.22,            # Stricter: Lower value flags narrower abnormal stances. Default: 0.25
+    "knock_knees": 0.15,     # Stricter: Higher ratio flags less severe cases. Default: 0.10
+    "bow_legs": 1.3,         # Stricter: Lower ratio flags less severe cases. Default: 1.5
 }
 
 CLOTHING_ADJUSTMENT_FACTOR = 1.15 # 15% more lenient threshold for loose clothing for Z and Y diffs
@@ -69,6 +85,8 @@ POSTURE_RECOMMENDATIONS = {
 
 # --- Session State Initialization ---
 default_session_states = {
+    'school_name': '',
+    'confirm_next_student': False,
     'current_entry': {}, 'landmark_image': None, 'all_landmark_images': {},
     'abnormalities': {}, 'records': [], 'current_student_id': None,
     'analysis_mode': "Single View Analysis", 'input_mode': "Upload Image",
@@ -109,6 +127,23 @@ def clear_image_memory():
     if 'current_image_to_process' in st.session_state: del st.session_state.current_image_to_process
     if 'current_images_to_process_multi' in st.session_state: del st.session_state.current_images_to_process_multi
     gc.collect()
+
+def reset_for_next_student():
+    """Resets the state for a new student, keeping school name and records."""
+    # Clear image and processing states
+    clear_image_memory()
+
+    # Clear current student data
+    st.session_state.current_entry = {}
+    st.session_state.current_student_id = None
+    
+    # Reset UI input fields to default values
+    st.session_state.selected_age_group = AGE_GROUPS[0]
+    st.session_state.selected_gender = GENDERS[0]
+    st.session_state.loose_clothing = False
+    
+    # Set flag to scroll to top on next rerun
+    st.session_state.scroll_to_top = True
 
 def optimize_image(image, max_size=800):
     if isinstance(image, np.ndarray): img = Image.fromarray(image)
@@ -197,6 +232,7 @@ def create_table_if_not_exists(conn):
     cursor = conn.cursor(); table_name = DB_TABLE_NAME
     cols = {
         "Student_ID": "NVARCHAR(50) NOT NULL PRIMARY KEY", "Student_Name": "NVARCHAR(255) NULL",
+        "School_Name": "NVARCHAR(255) NULL",
         "Age_Group": "NVARCHAR(50) NULL", "Gender": "NVARCHAR(20) NULL", "Loose_Clothing": "BIT NULL",
         "Observation_Timestamp": "DATETIME2 NULL", "UploadTimestamp": "DATETIME2 DEFAULT GETDATE() NULL"
     }
@@ -216,7 +252,7 @@ def upload_records_to_sql(conn, records_to_upload):
     if not create_table_if_not_exists(conn): return {"type": "error", "message": "Failed to create or verify database table."}
 
     cursor = conn.cursor(); table_name = DB_TABLE_NAME
-    base_sql_cols = ["Student_ID", "Student_Name", "Age_Group", "Gender", "Loose_Clothing", "Observation_Timestamp"]
+    base_sql_cols = ["Student_ID", "Student_Name", "School_Name", "Age_Group", "Gender", "Loose_Clothing", "Observation_Timestamp"]
     abnormality_sql_cols = [k.replace(' ', '_').replace('-', '_') for k in POSTURE_RECOMMENDATIONS.keys()]
     metrics_sql_cols = ["shoulder_z", "hip_z", "knee_z", "ear_shoulder_hip_angle", "ear_shoulder_horizontal_distance", "shoulder_y_diff", "foot_z_diff", "ankle_x_diff", "knee_x_diff"]
     all_sql_cols = base_sql_cols + abnormality_sql_cols + metrics_sql_cols
@@ -229,7 +265,7 @@ def upload_records_to_sql(conn, records_to_upload):
 
     for record in records_to_upload:
         values_for_insert = [
-            record.get("Student ID"), record.get("Student Name"),
+            record.get("Student ID"), record.get("Student Name"), record.get("School Name"),
             record.get("Age_Group"), record.get("Gender"),
             bool(record.get("Loose_Clothing", False)),
             record.get("Timestamp")
@@ -350,7 +386,7 @@ def analyze_multi_view_data(multi_images_pil_dict, selected_abnormalities_config
     primary_img = all_landmarked_images_pil.get('Left Side View') or next(iter(all_landmarked_images_pil.values()), None)
     return final_abnormalities, consolidated_metrics, primary_img, all_landmarked_images_pil
 
-# --- Gemini API Integration ---
+# --- Gemini API Integration (kept for potential future use) ---
 def get_gemini_suggestions(abnormalities_detected_dict, student_name, age_group, gender):
     st.session_state.gemini_suggestions = None; st.session_state.gemini_suggestions_error = None
     detected_issues = [name for name, present in abnormalities_detected_dict.items() if present]
@@ -385,6 +421,13 @@ def get_gemini_suggestions(abnormalities_detected_dict, student_name, age_group,
         st.session_state.gemini_suggestions_error = f"An unexpected error occurred while fetching AI suggestions: {e}"; return None
 
 # --- Main Application UI ---
+st.session_state.school_name = st.text_input(
+    "Enter School Name (for this session):",
+    value=st.session_state.get('school_name', ''),
+    key="school_name_input"
+)
+st.markdown("---")
+
 child_name = st.text_input("Enter Child's Name (Mandatory):", key="child_name_input", value=st.session_state.get('current_entry',{}).get('Student Name',''))
 
 if child_name:
@@ -423,26 +466,26 @@ def create_threshold_input(label, key, min_val, max_val, step, help_text, format
 
 # Expandable section for threshold adjustments using the new input mode
 with st.expander("⚙️ Advanced: Adjust Detection Thresholds"):
-    st.info("Adjust these values to change the sensitivity of the detection. Higher values for differences/distances and lower values for angles generally make detection stricter.")
+    st.info("Adjust these values to change the sensitivity of the detection. Lower values are generally less strict.")
 
-    create_threshold_input("Kyphosis (Sh-Hip Z-Diff >)", 'kyphosis', 0.05, 0.4, 0.01, "Higher value requires more forward shoulder slouch.", "%.2f")
-    create_threshold_input("Lordosis (Hip-Knee Z-Diff >)", 'lordosis', 0.05, 0.4, 0.01, "Higher value requires more pronounced lower back curve.", "%.2f")
+    create_threshold_input("Kyphosis (Slouching)", 'kyphosis', 0.05, 0.4, 0.01, "Increasing this value makes detection stricter, requiring more of a slouch to be flagged.", "%.2f")
+    create_threshold_input("Lordosis (Lower Back Curve)", 'lordosis', 0.05, 0.4, 0.01, "Increasing this value makes detection stricter, requiring a more pronounced curve.", "%.2f")
 
     col_tn1, col_tn2 = st.columns(2)
     with col_tn1:
-        create_threshold_input("Tech Neck (ESH Angle <)", 'tech_neck_angle', 45.0, 90.0, 0.5, "Lower value requires more forward head tilt.", "%.1f")
+        create_threshold_input("Tech Neck (Head Tilt Angle)", 'tech_neck_angle', 45.0, 90.0, 0.5, "Decreasing this value makes detection stricter, flagging smaller head tilts.", "%.1f")
     with col_tn2:
-        create_threshold_input("Tech Neck (ESH Horiz Dist >)", 'tech_neck_dist', 0.0, 0.2, 0.01, "Higher value requires ear to be more forward of shoulder.", "%.2f")
+        create_threshold_input("Tech Neck (Head Forward Distance)", 'tech_neck_dist', 0.0, 0.2, 0.01, "Increasing this value makes detection stricter, flagging smaller forward head positions.", "%.2f")
 
-    create_threshold_input("Scoliosis (Shoulder Y-Diff >)", 'scoliosis', 0.01, 0.2, 0.01, "Higher value requires a greater height difference between shoulders.", "%.2f")
-    create_threshold_input("Flat Feet (Foot Arch <)", 'flat_feet', 0.01, 0.15, 0.01, "Lower value requires a flatter foot arch.", "%.2f")
-    create_threshold_input("Gait Abnormality (Ankle X-Diff >)", 'gait', 0.1, 0.5, 0.01, "Higher value means feet are wider apart.", "%.2f")
+    create_threshold_input("Scoliosis (Shoulder Height)", 'scoliosis', 0.01, 0.2, 0.01, "Increasing this value makes detection stricter, flagging smaller differences in shoulder height.", "%.2f")
+    create_threshold_input("Flat Feet (Foot Arch)", 'flat_feet', 0.01, 0.15, 0.01, "Decreasing this value makes detection stricter, requiring an even flatter foot arch to be flagged.", "%.2f")
+    create_threshold_input("Gait (Foot Stance Width)", 'gait', 0.1, 0.5, 0.01, "Increasing this value makes detection stricter, flagging wider foot stances as abnormal.", "%.2f")
 
     col_kk, col_bl = st.columns(2)
     with col_kk:
-        create_threshold_input("Knock Knees (Knee/Ankle Ratio <)", 'knock_knees', 0.05, 0.95, 0.01, "Lower value means knees must be much closer than ankles.", "%.2f")
+        create_threshold_input("Knock Knees (Knee Proximity)", 'knock_knees', 0.05, 0.95, 0.01, "Decreasing this value makes detection stricter for knees that are close together.", "%.2f")
     with col_bl:
-        create_threshold_input("Bow Legs (Knee/Ankle Ratio >)", 'bow_legs', 1.1, 3.0, 0.05, "Higher value means knees must be much wider than ankles.", "%.2f")
+        create_threshold_input("Bow Legs (Knee Separation)", 'bow_legs', 1.1, 3.0, 0.05, "Increasing this value makes detection stricter for knees that are far apart.", "%.2f")
 
     if st.button("Reset Thresholds to Default", key="reset_thresh_btn"):
         st.session_state.thresholds = DEFAULT_THRESHOLDS.copy()
@@ -497,7 +540,7 @@ if child_name:
 else: st.warning("Please enter the child's name and select their age group and gender to proceed.")
 
 btn_label = "Analyze Posture"
-enable_btn = bool(child_name and ( (st.session_state.analysis_mode == "Single View Analysis" and single_image_data_pil) or \
+enable_btn = bool(child_name and st.session_state.school_name and ( (st.session_state.analysis_mode == "Single View Analysis" and single_image_data_pil) or \
                                 (st.session_state.analysis_mode == "Multi-View Analysis (4 Views)" and \
                                  (st.session_state.all_multi_images_uploaded or st.session_state.all_multi_images_captured) and \
                                  all(multi_images_data_pil.get(v) or st.session_state.captured_images_multi.get(v) for v in VIEWS_SEQUENCE) ) ) )
@@ -506,7 +549,8 @@ if st.button(btn_label, key="analyze_button", disabled=not enable_btn):
     st.session_state.processing_done = False; st.session_state.gemini_suggestions = None
     sid = st.session_state.get("current_student_id") or f"FN-{random.randint(1000,9999)}"
     st.session_state.current_student_id = sid
-    base_entry_info = {"Student ID": sid, "Student Name": child_name, "Age_Group": st.session_state.selected_age_group,
+    base_entry_info = {"Student ID": sid, "Student Name": child_name, "School Name": st.session_state.school_name,
+                       "Age_Group": st.session_state.selected_age_group,
                        "Gender": st.session_state.selected_gender, "Loose_Clothing": st.session_state.loose_clothing,
                        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
     
@@ -590,195 +634,196 @@ if st.session_state.processing_done and st.session_state.get("current_entry"):
     else: st.info("No abnormalities detected.")
 
     st.markdown("---")
-    st.markdown('<div class="gemini-button">', unsafe_allow_html=True)
-    if st.button("✨ Get AI Exercise & Lifestyle Tips", key="gemini_tips_button"):
-        with st.spinner("✨ Our AI is crafting personalized tips..."):
-            get_gemini_suggestions(st.session_state.abnormalities, st.session_state.current_entry['Student Name'],
-                                   st.session_state.current_entry['Age_Group'], st.session_state.current_entry['Gender'])
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    if st.session_state.gemini_suggestions: st.markdown("### ✨ AI-Powered Suggestions"); st.markdown(st.session_state.gemini_suggestions)
-    elif st.session_state.gemini_suggestions_error: st.error(f"Could not fetch AI suggestions: {st.session_state.gemini_suggestions_error}")
     
-    st.markdown("---")
+    # --- Generate PDF data in memory ---
+    pdf_bytes_out = b""
+    try:
+        data_pdf = st.session_state.current_entry
+        abn_pdf = st.session_state.abnormalities
+        gemini_sug_pdf = None # Gemini functionality is removed
 
-    col1_actions, col2_actions = st.columns(2)
-    with col1_actions:
-        if st.button("💾 Save Result Locally", key="save_result_button"):
-            st.session_state.current_entry["Gemini_Suggestions"] = st.session_state.gemini_suggestions
-            st.session_state.records.append(st.session_state.current_entry.copy())
-            st.success(f"Result for {st.session_state.current_entry['Student ID']} saved locally!")
-    with col2_actions:
-        if st.button("📄 Generate PDF Report", key="generate_pdf_button"):
+        pdf = FPDF(); pdf.add_page(); pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.set_font("Arial", "B", 16); pdf.cell(0, 10, "FitNurture Posture Analysis Report", ln=1, align="C")
+        pdf.set_font("Arial", "", 9); pdf.cell(0, 7, "www.futurenurture.in", ln=1, align="C", link="http://www.futurenurture.in"); pdf.ln(5)
+        current_y_logo = pdf.get_y(); logo_pdf_path = next((p for p in logo_paths if os.path.exists(p)), None)
+        if logo_pdf_path:
+            logo_width_pdf = 35; logo_height_pdf = 17.5
+            if current_y_logo + logo_height_pdf > pdf.page_break_trigger - 5: pdf.add_page(); current_y_logo = pdf.get_y()
+            pdf.image(logo_pdf_path, x=(210-logo_width_pdf)/2, y=current_y_logo, w=logo_width_pdf); pdf.set_y(current_y_logo + logo_height_pdf + 5)
+            pdf.ln(10) # Add extra space after the logo
+        pdf.set_font("Arial", "", 10)
+        details_pdf = { 
+            "School Name": data_pdf.get('School Name'),
+            "Student Name": data_pdf.get('Student Name'), "Student ID": data_pdf.get('Student ID'),
+            "Age Group": data_pdf.get('Age_Group'), "Gender": data_pdf.get('Gender'),
+            "Timestamp": data_pdf.get('Timestamp')
+        }
+        for k_pdf, v_pdf in details_pdf.items(): pdf.cell(0, 7, f"{k_pdf}: {v_pdf or 'N/A'}", ln=1)
+
+        pdf.set_font("Arial", "", 10)
+        clothing_status_pdf = "Yes" if data_pdf.get('Loose_Clothing') else "No"
+        pdf.cell(0, 7, f"Wearing Non-Body-Fitting Clothes: {clothing_status_pdf}", ln=1)
+        if data_pdf.get('Loose_Clothing'):
+            pdf.set_font("Arial", "I", 8)
+            pdf.multi_cell(0, 4, "Note: Indication of non-body-fitting clothes might slightly reduce the precision of some skeletal measurements. Thresholds for Kyphosis, Lordosis, and Scoliosis were adjusted accordingly.", 0, 'L', False); pdf.ln(1)
+        pdf.ln(5)
+
+        if st.session_state.analysis_mode == "Multi-View Analysis (4 Views)" and st.session_state.all_landmark_images:
+            pdf.set_font("Arial", "B", 10); pdf.cell(0, 7, "Processed Views:", ln=1, align='C'); pdf.ln(2)
+            pdf.set_font("Arial", "", 8); img_display_width_pdf = 70; img_spacing_horizontal_pdf = 10
+            row_start_x_pdf = (pdf.w - (img_display_width_pdf * 2 + img_spacing_horizontal_pdf)) / 2
+            image_paths_to_delete_pdf = []
             try:
-                data_pdf = st.session_state.current_entry
-                abn_pdf = st.session_state.abnormalities
-                gemini_sug_pdf = st.session_state.get("gemini_suggestions")
-
-                pdf = FPDF(); pdf.add_page(); pdf.set_auto_page_break(auto=True, margin=15)
-                pdf.set_font("Arial", "B", 16); pdf.cell(0, 10, "FitNurture Posture Analysis Report", ln=1, align="C")
-                pdf.set_font("Arial", "", 9); pdf.cell(0, 7, "www.futurenurture.in", ln=1, align="C", link="http://www.futurenurture.in"); pdf.ln(5)
-                current_y_logo = pdf.get_y(); logo_pdf_path = next((p for p in logo_paths if os.path.exists(p)), None)
-                if logo_pdf_path:
-                    logo_width_pdf = 35; logo_height_pdf = 17.5
-                    if current_y_logo + logo_height_pdf > pdf.page_break_trigger - 5: pdf.add_page(); current_y_logo = pdf.get_y()
-                    pdf.image(logo_pdf_path, x=(210-logo_width_pdf)/2, y=current_y_logo, w=logo_width_pdf); pdf.set_y(current_y_logo + logo_height_pdf + 5)
-                pdf.set_font("Arial", "B", 12)
-                details_pdf = { # Use a different variable name to avoid conflict
-                    "Student Name": data_pdf.get('Student Name'), "Student ID": data_pdf.get('Student ID'),
-                    "Age Group": data_pdf.get('Age_Group'), "Gender": data_pdf.get('Gender'),
-                    "Timestamp": data_pdf.get('Timestamp')
-                }
-                for k_pdf, v_pdf in details_pdf.items(): pdf.cell(0, 7, f"{k_pdf}: {v_pdf or 'N/A'}", ln=1)
-
-                pdf.set_font("Arial", "", 10)
-                clothing_status_pdf = "Yes" if data_pdf.get('Loose_Clothing') else "No"
-                pdf.cell(0, 7, f"Wearing Non-Body-Fitting Clothes: {clothing_status_pdf}", ln=1)
-                if data_pdf.get('Loose_Clothing'):
-                    pdf.set_font("Arial", "I", 8)
-                    pdf.multi_cell(0, 4, "Note: Indication of non-body-fitting clothes might slightly reduce the precision of some skeletal measurements. Thresholds for Kyphosis, Lordosis, and Scoliosis were adjusted accordingly.", 0, 'L', False); pdf.ln(1) # Added align L
-                pdf.ln(5)
-
-                if st.session_state.analysis_mode == "Multi-View Analysis (4 Views)" and st.session_state.all_landmark_images:
-                    pdf.set_font("Arial", "B", 10); pdf.cell(0, 7, "Processed Views:", ln=1, align='C'); pdf.ln(2)
-                    pdf.set_font("Arial", "", 8); img_display_width_pdf = 70; img_spacing_horizontal_pdf = 10
-                    row_start_x_pdf = (pdf.w - (img_display_width_pdf * 2 + img_spacing_horizontal_pdf)) / 2
-                    image_paths_to_delete_pdf = []
-                    try: # Wrap multi-image processing in try-finally for cleanup
-                        for i_row in range(0, len(VIEWS_SEQUENCE), 2):
-                            current_y_for_row_pdf = pdf.get_y(); max_h_this_row_pdf = 0
-                            for j_col in range(2): # Max 2 images per row
-                                idx = i_row + j_col
-                                if idx < len(VIEWS_SEQUENCE):
-                                    view_name_pdf = VIEWS_SEQUENCE[idx]; pil_image_pdf = st.session_state.all_landmark_images.get(view_name_pdf)
-                                    if pil_image_pdf:
-                                        tmp_file_handle_multi = None
-                                        tmp_file_path_multi = None
-                                        try:
-                                            tmp_file_handle_multi = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-                                            tmp_file_path_multi = tmp_file_handle_multi.name
-                                            
-                                            pil_image_pdf.save(tmp_file_path_multi, format="JPEG")
-                                            tmp_file_handle_multi.close() 
-                                            tmp_file_handle_multi = None # Mark as closed
-
-                                            image_paths_to_delete_pdf.append(tmp_file_path_multi) 
-                                            
-                                            o_w, o_h = pil_image_pdf.size; asp = o_h/o_w if o_w > 0 else 1; img_h = img_display_width_pdf * asp
-                                            max_h_this_row_pdf = max(max_h_this_row_pdf, img_h)
-                                            if current_y_for_row_pdf + img_h + 10 > pdf.page_break_trigger: 
-                                                pdf.add_page()
-                                                current_y_for_row_pdf = pdf.get_y()
-                                            
-                                            x_pos_img_pdf = row_start_x_pdf + j_col * (img_display_width_pdf + img_spacing_horizontal_pdf)
-                                            pdf.image(tmp_file_path_multi, x=x_pos_img_pdf, y=current_y_for_row_pdf, w=img_display_width_pdf, h=img_h)
-                                            pdf.set_xy(x_pos_img_pdf, current_y_for_row_pdf + img_h + 1) 
-                                            pdf.multi_cell(img_display_width_pdf, 4, view_name_pdf, 0, 'C')
-                                        except Exception as e_multi_img_pdf_item:
-                                            st.warning(f"Error processing image {view_name_pdf} for PDF: {e_multi_img_pdf_item}")
-                                            if tmp_file_handle_multi is not None and not tmp_file_handle_multi.closed:
-                                                tmp_file_handle_multi.close()
-                                            # If path was added before error, it will be cleaned up by the outer finally
-                            if max_h_this_row_pdf > 0: pdf.set_y(current_y_for_row_pdf + max_h_this_row_pdf + 5 + 5) 
-                            else: pdf.ln(5)
-                    finally:
-                        for path_del in image_paths_to_delete_pdf:
-                            if path_del and os.path.exists(path_del):
-                                try: os.unlink(path_del)
-                                except Exception as e_unlink_multi_loop: st.warning(f"Could not delete temp PDF image {path_del} in loop: {e_unlink_multi_loop}")
-                    pdf.ln(5)
-                elif st.session_state.analysis_mode == "Single View Analysis" and st.session_state.get("landmark_image"):
-                    pil_image_pdf_single = st.session_state.landmark_image
-                    page_width_pdf = pdf.w - pdf.l_margin - pdf.r_margin; max_image_height_pdf_val = 80
-                    original_w_px_pdf, original_h_px_pdf = pil_image_pdf_single.size; aspect_ratio_pdf = original_h_px_pdf / original_w_px_pdf if original_w_px_pdf > 0 else 1
-                    img_w_pdf_val = page_width_pdf * 0.70; img_h_pdf_val = img_w_pdf_val * aspect_ratio_pdf
-                    if img_h_pdf_val > max_image_height_pdf_val: img_h_pdf_val = max_image_height_pdf_val; img_w_pdf_val = img_h_pdf_val / aspect_ratio_pdf if aspect_ratio_pdf > 0 else max_image_height_pdf_val
-                    
+                for i_row in range(0, len(VIEWS_SEQUENCE), 2):
+                    current_y_for_row_pdf = pdf.get_y(); max_h_this_row_pdf = 0
+                    for j_col in range(2):
+                        idx = i_row + j_col
+                        if idx < len(VIEWS_SEQUENCE):
+                            view_name_pdf = VIEWS_SEQUENCE[idx]; pil_image_pdf = st.session_state.all_landmark_images.get(view_name_pdf)
+                            if pil_image_pdf:
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
+                                    pil_image_pdf.save(tmp_file.name, format="JPEG")
+                                    image_paths_to_delete_pdf.append(tmp_file.name)
+                                    o_w, o_h = pil_image_pdf.size; asp = o_h/o_w if o_w > 0 else 1; img_h = img_display_width_pdf * asp
+                                    max_h_this_row_pdf = max(max_h_this_row_pdf, img_h)
+                                    if current_y_for_row_pdf + img_h + 10 > pdf.page_break_trigger: 
+                                        pdf.add_page()
+                                        current_y_for_row_pdf = pdf.get_y()
+                                    x_pos_img_pdf = row_start_x_pdf + j_col * (img_display_width_pdf + img_spacing_horizontal_pdf)
+                                    pdf.image(tmp_file.name, x=x_pos_img_pdf, y=current_y_for_row_pdf, w=img_display_width_pdf, h=img_h)
+                                    pdf.set_xy(x_pos_img_pdf, current_y_for_row_pdf + img_h + 1) 
+                                    pdf.multi_cell(img_display_width_pdf, 4, view_name_pdf, 0, 'C')
+                    if max_h_this_row_pdf > 0: pdf.set_y(current_y_for_row_pdf + max_h_this_row_pdf + 10)
+            finally:
+                for path_del in image_paths_to_delete_pdf:
+                    if path_del and os.path.exists(path_del):
+                        try: os.unlink(path_del)
+                        except Exception as e_unlink: st.warning(f"Could not delete temp PDF image {path_del}: {e_unlink}")
+            pdf.ln(5)
+        elif st.session_state.analysis_mode == "Single View Analysis" and st.session_state.get("landmark_image"):
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
+                pil_image_pdf_single = st.session_state.landmark_image
+                pil_image_pdf_single.save(tmp_file.name, format="JPEG")
+                page_width_pdf = pdf.w - pdf.l_margin - pdf.r_margin; max_image_height_pdf_val = 80
+                original_w_px_pdf, original_h_px_pdf = pil_image_pdf_single.size; aspect_ratio_pdf = original_h_px_pdf / original_w_px_pdf if original_w_px_pdf > 0 else 1
+                img_w_pdf_val = page_width_pdf * 0.70; img_h_pdf_val = img_w_pdf_val * aspect_ratio_pdf
+                if img_h_pdf_val > max_image_height_pdf_val: img_h_pdf_val = max_image_height_pdf_val; img_w_pdf_val = img_h_pdf_val / aspect_ratio_pdf if aspect_ratio_pdf > 0 else max_image_height_pdf_val
+                current_y_img_pdf = pdf.get_y()
+                if current_y_img_pdf + img_h_pdf_val > pdf.page_break_trigger - 5: 
+                    pdf.add_page()
                     current_y_img_pdf = pdf.get_y()
-                    if current_y_img_pdf + img_h_pdf_val > pdf.page_break_trigger - 5: 
-                        pdf.add_page()
-                        current_y_img_pdf = pdf.get_y()
+                img_x_pos_pdf = (pdf.w - img_w_pdf_val) / 2
+                pdf.image(tmp_file.name, x=img_x_pos_pdf, y=current_y_img_pdf, w=img_w_pdf_val, h=img_h_pdf_val)
+                pdf.set_y(current_y_img_pdf + img_h_pdf_val + 5)
+            if os.path.exists(tmp_file.name):
+                os.unlink(tmp_file.name)
+            pdf.ln(3)
 
-                    tmp_file_handle_single = None
-                    tmp_file_path_single_pdf = None # Renamed to avoid conflict
-                    try:
-                        tmp_file_handle_single = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-                        tmp_file_path_single_pdf = tmp_file_handle_single.name
-                        pil_image_pdf_single.save(tmp_file_path_single_pdf, format="JPEG")
-                        tmp_file_handle_single.close()
-                        tmp_file_handle_single = None # Mark as closed
-
-                        img_x_pos_pdf = (pdf.w - img_w_pdf_val) / 2
-                        pdf.image(tmp_file_path_single_pdf, x=img_x_pos_pdf, y=current_y_img_pdf, w=img_w_pdf_val, h=img_h_pdf_val)
-                        pdf.set_y(current_y_img_pdf + img_h_pdf_val + 5)
-                    finally:
-                        if tmp_file_handle_single is not None and not tmp_file_handle_single.closed: # Should not happen if logic is correct
-                            try: tmp_file_handle_single.close()
-                            except: pass 
-                        if tmp_file_path_single_pdf and os.path.exists(tmp_file_path_single_pdf):
-                            try: os.unlink(tmp_file_path_single_pdf)
-                            except Exception as e_unlink_single: st.warning(f"Could not delete temp PDF image {tmp_file_path_single_pdf}: {e_unlink_single}")
-                    pdf.ln(3)
-
-
-                pdf.set_font("Arial", "B", 11); pdf.cell(0, 7, "Detected Postural Issues:", ln=1)
-                pdf.set_font("Arial", "", 9); detected_cond_pdf = []
-                if abn_pdf:
-                    for cond, pres in abn_pdf.items():
-                        reason_str_pdf = get_abnormality_reason_string(cond, data_pdf) if pres else ""
-                        pdf.cell(0, 5, f"- {cond}: {'Present' if pres else 'Not Present'} {reason_str_pdf}", ln=1)
-                        if pres: detected_cond_pdf.append(cond)
-                else: pdf.cell(0,5, "- No abnormalities selected for detection or none found.", ln=1)
-                pdf.ln(2)
-                if detected_cond_pdf:
-                    pdf.set_font("Arial", "B", 11); pdf.cell(0, 7, "General Recommendations (Standard):", ln=1)
-                    pdf.set_font("Arial", "", 9); available_width_pdf = pdf.w - pdf.l_margin - pdf.r_margin - 10 
-                    for cond in detected_cond_pdf:
-                        if cond in POSTURE_RECOMMENDATIONS:
-                            pdf.set_font("Arial", "B", 9); pdf.multi_cell(available_width_pdf, 5, f"For {cond}:")
-                            pdf.set_font("Arial", "", 9)
-                            for rec_item in POSTURE_RECOMMENDATIONS[cond]:
-                                clean_rec_item = rec_item.strip(); pdf.set_x(pdf.l_margin + 5); pdf.multi_cell(available_width_pdf - 5, 4, clean_rec_item) 
-                            pdf.ln(1)
-                if gemini_sug_pdf:
-                    pdf.ln(3); pdf.set_font("Arial", "B", 11); pdf.cell(0, 7, "✨ AI-Powered Personalized Suggestions:", ln=1)
+        pdf.set_font("Arial", "B", 11); pdf.cell(0, 7, "Detected Postural Issues:", ln=1)
+        pdf.set_font("Arial", "", 9); detected_cond_pdf = []
+        if abn_pdf:
+            for cond, pres in abn_pdf.items():
+                reason_str_pdf = get_abnormality_reason_string(cond, data_pdf, st.session_state.thresholds) if pres else ""
+                pdf.cell(0, 5, f"- {cond}: {'Present' if pres else 'Not Present'} {reason_str_pdf}", ln=1)
+                if pres: detected_cond_pdf.append(cond)
+        else: pdf.cell(0,5, "- No abnormalities selected for detection or none found.", ln=1)
+        pdf.ln(2)
+        if detected_cond_pdf:
+            pdf.set_font("Arial", "B", 11); pdf.cell(0, 7, "General Recommendations (Standard):", ln=1)
+            pdf.set_font("Arial", "", 9); available_width_pdf = pdf.w - pdf.l_margin - pdf.r_margin - 10 
+            for cond in detected_cond_pdf:
+                if cond in POSTURE_RECOMMENDATIONS:
+                    pdf.set_font("Arial", "B", 9); pdf.multi_cell(available_width_pdf, 5, f"For {cond}:")
                     pdf.set_font("Arial", "", 9)
-                    lines = gemini_sug_pdf.split('\n')
-                    estimated_height = len(lines) * 4
-                    if pdf.get_y() + estimated_height > pdf.page_break_trigger: pdf.add_page()
-                    for line_pdf in lines: 
-                        line_stripped = line_pdf.strip()
-                        if line_stripped.startswith("### "): pdf.set_font("Arial", "B", 10); pdf.multi_cell(0, 5, line_stripped.replace("### ", ""), ln=1); pdf.set_font("Arial", "", 9)
-                        elif line_stripped.startswith("#### "): pdf.set_font("Arial", "B", 9); pdf.multi_cell(0, 5, line_stripped.replace("#### ", ""), ln=1); pdf.set_font("Arial", "", 9)
-                        elif line_stripped.startswith("**For"): pdf.set_font("Arial", "B", 9); pdf.multi_cell(0, 5, line_stripped.replace("**", ""), ln=1); pdf.set_font("Arial", "", 9)
-                        elif line_stripped.startswith("* ") or line_stripped.startswith("- ") or (line_stripped and line_stripped[0].isdigit() and line_stripped[1:3] == ". "):
-                            pdf.set_x(pdf.l_margin + 5); pdf.multi_cell(0, 4, line_stripped, ln=1); pdf.set_x(pdf.l_margin)
-                        else: pdf.multi_cell(0, 4, line_stripped, ln=1)
+                    for rec_item in POSTURE_RECOMMENDATIONS[cond]:
+                        clean_rec_item = rec_item.strip(); pdf.set_x(pdf.l_margin + 5); pdf.multi_cell(available_width_pdf - 5, 4, clean_rec_item) 
                     pdf.ln(1)
+        
+        pdf.ln(2); disclaimer_height_estimate_pdf = 15
+        if pdf.get_y() + disclaimer_height_estimate_pdf > pdf.page_break_trigger -5: pdf.add_page()
+        pdf.set_font("Arial", "I", 7)
+        disclaimer_text_pdf = "Disclaimer: This automated analysis is for informational purposes only and not a substitute for professional medical advice. Accuracy may be affected by factors like image quality and clothing. Consult a healthcare provider for health concerns or before starting new exercises."
+        pdf.multi_cell(0, 3.5, disclaimer_text_pdf, align="C")
+        
+        pdf_output_data = pdf.output(dest='S')
+        if isinstance(pdf_output_data, str): pdf_bytes_out = pdf_output_data.encode('latin-1')
+        elif isinstance(pdf_output_data, (bytearray, bytes)): pdf_bytes_out = bytes(pdf_output_data)
+        else: st.error(f"Unexpected PDF output type: {type(pdf_output_data)}"); pdf_bytes_out = b""
+        if not pdf_bytes_out: st.error("Critical PDF Error: Output from FPDF is empty.")
 
-                pdf.ln(2); disclaimer_height_estimate_pdf = 15
-                if pdf.get_y() + disclaimer_height_estimate_pdf > pdf.page_break_trigger -5: pdf.add_page()
-                pdf.set_font("Arial", "I", 7)
-                disclaimer_text_pdf = "Disclaimer: This automated analysis, including AI-powered suggestions, is for informational purposes only and not a substitute for professional medical advice. Accuracy may be affected by factors like image quality and clothing. Consult a healthcare provider for health concerns or before starting new exercises."
-                pdf.multi_cell(0, 3.5, disclaimer_text_pdf, align="C")
-                pdf_output_data = pdf.output(dest='S')
-                if isinstance(pdf_output_data, str): pdf_bytes_out = pdf_output_data.encode('latin-1')
-                elif isinstance(pdf_output_data, (bytearray, bytes)): pdf_bytes_out = bytes(pdf_output_data)
-                else: st.error(f"Unexpected PDF output type: {type(pdf_output_data)}"); pdf_bytes_out = b""
-                if not pdf_bytes_out: st.error("Critical PDF Error: Output from FPDF is empty.")
+    except Exception as e:
+        st.error(f"Error during PDF generation process: {e}\n{traceback.format_exc()}")
+        pdf_bytes_out = b""
+
+    # --- Confirmation Dialog Logic for "Next Student" ---
+    if st.session_state.get('confirm_next_student'):
+        st.warning("The current student's analysis has not been saved locally. Do you want to save it before proceeding?")
+        col_confirm1, col_confirm2, col_confirm3, _ = st.columns([2, 2, 1, 2])
+        with col_confirm1:
+            if st.button("💾 Save and Continue", key="confirm_save_next"):
+                st.session_state.records.append(st.session_state.current_entry.copy())
+                st.success(f"Result for {st.session_state.current_entry['Student ID']} saved.")
+                st.session_state.confirm_next_student = False
+                reset_for_next_student()
+                st.rerun()
+        with col_confirm2:
+            if st.button("Continue Without Saving", key="confirm_discard_next"):
+                st.session_state.confirm_next_student = False
+                reset_for_next_student()
+                st.rerun()
+        with col_confirm3:
+            if st.button("Cancel", key="confirm_cancel_next"):
+                st.session_state.confirm_next_student = False
+                st.rerun()
+    else:
+        # --- Regular Action Buttons ---
+        col1_actions, col2_actions, col3_actions = st.columns(3)
+        with col1_actions:
+            if st.button("💾 Save Result Locally", key="save_result_button"):
+                st.session_state.records.append(st.session_state.current_entry.copy())
+                st.success(f"Result for {st.session_state.current_entry['Student ID']} saved locally!")
+        with col2_actions:
+            if st.button("➡️ Next Student", key="next_student_button"):
+                current_id = st.session_state.get('current_student_id')
+                is_saved = any(rec.get('Student ID') == current_id for rec in st.session_state.records) if current_id else True
+                if st.session_state.processing_done and not is_saved:
+                    st.session_state.confirm_next_student = True
+                    st.rerun()
                 else:
-                    st.success("PDF Report Generated!"); st.download_button(label="📥 Download Report PDF",data=pdf_bytes_out,file_name=f"posture_report_{data_pdf.get('Student ID', 'report') if data_pdf else 'report'}.pdf",mime="application/pdf",key="download_full_pdf_button")
-            except Exception as e:
-                st.error(f"Error during PDF generation process: {e}\n{traceback.format_exc()}")
-
-
-          
-
+                    reset_for_next_student()
+                    st.rerun()
+        with col3_actions:
+            if pdf_bytes_out:
+                st.download_button(
+                    label="📥 Download Report PDF",
+                    data=pdf_bytes_out,
+                    file_name=f"posture_report_{data_pdf.get('Student ID', 'report')}.pdf",
+                    mime="application/pdf",
+                    key="download_full_pdf_button"
+                )
 
 # --- View Data Table and Cloud Upload ---
 st.markdown("---"); st.subheader("📊 View Locally Saved Records")
 if st.session_state.records:
-    st.dataframe(pd.DataFrame(st.session_state.records))
+    # Create a display-friendly DataFrame that includes the School Name
+    display_records = []
+    for record in st.session_state.records:
+        # Ensure school name from the time of analysis is shown
+        display_record = record.copy()
+        display_records.append(display_record)
+    
+    # Define columns to display, including the new School Name
+    cols_to_display = ["School Name", "Student ID", "Student Name", "Age_Group", "Gender", "Timestamp"]
+    abnormality_cols = []
+    if display_records:
+        abnormality_cols = [k for k in POSTURE_RECOMMENDATIONS.keys() if k in display_records[0]]
+    final_cols = cols_to_display + abnormality_cols
+    
+    # Filter out columns that might not exist in every record for robustness
+    df = pd.DataFrame(display_records)
+    final_cols_exist = [col for col in final_cols if col in df.columns]
+    
+    st.dataframe(df[final_cols_exist])
 
 st.markdown("---"); st.subheader("☁️ Cloud Data Storage")
 if st.session_state.get('records'):
