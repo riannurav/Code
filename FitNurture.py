@@ -317,6 +317,24 @@ def process_image_for_view(image_pil, view_name="Unknown View"):
     mp_drawing.draw_landmarks(img_bgr_for_drawing, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
         mp_drawing.DrawingSpec(color=(0,255,0), thickness=2, circle_radius=2),
         mp_drawing.DrawingSpec(color=(255,0,0), thickness=2, circle_radius=2))
+    h, w = img_bgr_for_drawing.shape[:2]
+    # Draw line connecting ear and shoulder for side views to highlight Tech Neck
+    if view_name in SIDE_VIEWS:
+        ear_id = mp_pose.PoseLandmark.LEFT_EAR if view_name == 'Left Side View' else mp_pose.PoseLandmark.RIGHT_EAR
+        shoulder_id = mp_pose.PoseLandmark.LEFT_SHOULDER if view_name == 'Left Side View' else mp_pose.PoseLandmark.RIGHT_SHOULDER
+
+        if ear_id.value < len(lm) and shoulder_id.value < len(lm):
+            ear_landmark = lm[ear_id.value]
+            shoulder_landmark = lm[shoulder_id.value]
+
+            if ear_landmark.visibility > LANDMARK_VISIBILITY_THRESHOLD and \
+               shoulder_landmark.visibility > LANDMARK_VISIBILITY_THRESHOLD:
+                
+                ear_point = (int(ear_landmark.x * w), int(ear_landmark.y * h))
+                shoulder_point = (int(shoulder_landmark.x * w), int(shoulder_landmark.y * h))
+                
+                # Draw the line in blue
+                cv2.line(img_bgr_for_drawing, ear_point, shoulder_point, (255, 0, 0), 2)
     img_bgr_with_labels = add_landmark_labels(img_bgr_for_drawing, results)
     landmarked_pil_image = Image.fromarray(cv2.cvtColor(img_bgr_with_labels, cv2.COLOR_BGR2RGB))
     metrics = {}
