@@ -201,23 +201,6 @@ def update_user_password(conn, user_id, new_password):
     finally:
         if 'cursor' in locals() and cursor: cursor.close()
 
-def reset_user_password_by_email(conn, email):
-    if conn is None: return False
-    try:
-        cursor = conn.cursor()
-        new_password_hash = hash_password(email) # Reset password to username (email)
-        cursor.execute(
-            f"UPDATE {USERS_TABLE_NAME} SET PasswordHash = ?, IsFirstLogin = 1 WHERE Email = ?",
-            (new_password_hash, email)
-        )
-        conn.commit()
-        return True
-    except pyodbc.Error as e:
-        st.error(f"Failed to reset password: {e}")
-        return False
-    finally:
-        if 'cursor' in locals() and cursor: cursor.close()
-
 def get_all_users(conn):
     if conn is None: return []
     try:
@@ -267,7 +250,7 @@ def login_screen():
                     conn.close()
                     st.rerun()
                 else:
-                    st.error("Invalid email or password. Please contact your admin to reset the password.")
+                    st.error("Invalid email or password.")
                     conn.close()
 
 def password_change_screen(first_time=False):
@@ -321,31 +304,15 @@ def admin_panel():
                 else: st.error(conn_details["message"])
 
     st.write("---")
-    st.write("**Manage Users**")
+    st.write("**Existing Users**")
     conn_details = get_db_connection()
     if conn_details["type"] == "success":
         conn = conn_details["connection"]
         users = get_all_users(conn)
         conn.close()
         if users:
-            user_emails = [user[0] for user in users if user[2] != 'admin'] # Exclude admin from reset list
             df = pd.DataFrame(users, columns=["Email", "Full Name", "Role", "Date Created", "Last Login", "Analyze Clicks", "Download Clicks"])
             st.dataframe(df)
-
-            st.write("**Reset User Password**")
-            selected_user = st.selectbox("Select a user to reset their password:", options=user_emails)
-            if st.button("Reset Selected User's Password"):
-                if selected_user:
-                    conn_details_reset = get_db_connection()
-                    if conn_details_reset['type'] == 'success':
-                        conn_reset = conn_details_reset['connection']
-                        if reset_user_password_by_email(conn_reset, selected_user):
-                            st.success(f"Password for {selected_user} has been reset to their email address. They will be required to change it on next login.")
-                        else:
-                            st.error(f"Failed to reset password for {selected_user}.")
-                        conn_reset.close()
-                    else:
-                        st.error(conn_details_reset['message'])
         else:
             st.info("No users found.")
     else:
@@ -504,19 +471,6 @@ def main_app():
         lm = results.pose_landmarks.landmark
         img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
         mp_drawing.draw_landmarks(img_bgr, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-        
-        h, w = img_bgr.shape[:2]
-        if view_name in SIDE_VIEWS:
-            ear_id = mp_pose.PoseLandmark.LEFT_EAR if view_name == 'Left Side View' else mp_pose.PoseLandmark.RIGHT_EAR
-            shoulder_id = mp_pose.PoseLandmark.LEFT_SHOULDER if view_name == 'Left Side View' else mp_pose.PoseLandmark.RIGHT_SHOULDER
-            if ear_id.value < len(lm) and shoulder_id.value < len(lm):
-                ear_lm = lm[ear_id.value]
-                shoulder_lm = lm[shoulder_id.value]
-                if ear_lm.visibility > LANDMARK_VISIBILITY_THRESHOLD and shoulder_lm.visibility > LANDMARK_VISIBILITY_THRESHOLD:
-                    ear_point = (int(ear_lm.x * w), int(ear_lm.y * h))
-                    shoulder_point = (int(shoulder_lm.x * w), int(shoulder_lm.y * h))
-                    cv2.line(img_bgr, ear_point, shoulder_point, (255, 0, 0), 2)
-
         landmarked_pil_image = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
         
         metrics = {}
@@ -769,72 +723,9 @@ def main_app():
             pdf.set_font("Arial", "B", 16); pdf.cell(0, 10, "FitNurture Posture Analysis Report", ln=1, align="C")
             pdf.set_font("Arial", "", 9); pdf.cell(0, 7, "www.futurenurture.in", ln=1, align="C", link="http://www.futurenurture.in"); pdf.ln(5)
             
-            details_pdf = { "School Name": data_pdf.get('School Name'),
-                "Student Name": data_pdf.get('Student Name'), "Student ID": data_pdf.get('Student ID'),
-                "Age Group": data_pdf.get('Age_Group'), "Gender": data_pdf.get('Gender'),
-                "Timestamp": data_pdf.get('Timestamp')
-            }
+            details_pdf = { "School Name": data_pdf.get('School Name'), "Student Name": data_pdf.get('Student Name'), "Student ID": data_pdf.get('Student ID'), "Age Group": data_pdf.get('Age_Group'), "Gender": data_pdf.get('Gender'), "Timestamp": data_pdf.get('Timestamp')}
             for k_pdf, v_pdf in details_pdf.items(): pdf.cell(0, 7, f"{k_pdf}: {v_pdf or 'N/A'}", ln=1)
-
-            pdf.set_font("Arial", "", 10)
-            clothing_status_pdf = "Yes" if data_pdf.get('Loose_Clothing') else "No"
-            pdf.cell(0, 7, f"Wearing Non-Body-Fitting Clothes: {clothing_status_pdf}", ln=1)
-            if data_pdf.get('Loose_Clothing'):
-                pdf.set_font("Arial", "I", 8)
-                pdf.multi_cell(0, 4, "Note: Indication of non-body-fitting clothes might slightly reduce the precision of some skeletal measurements. Thresholds for Kyphosis, Lordosis, and Scoliosis were adjusted accordingly.", 0, 'L', False); pdf.ln(1)
-            pdf.ln(5)
-
-            if st.session_state.analysis_mode == "Multi-View Analysis (4 Views)" and st.session_state.all_landmark_images:
-                pdf.set_font("Arial", "B", 10); pdf.cell(0, 7, "Processed Views:", ln=1, align='C'); pdf.ln(2)
-                pdf.set_font("Arial", "", 8); img_display_width_pdf = 70; img_spacing_horizontal_pdf = 10
-                row_start_x_pdf = (pdf.w - (img_display_width_pdf * 2 + img_spacing_horizontal_pdf)) / 2
-                image_paths_to_delete_pdf = []
-                try:
-                    for i_row in range(0, len(VIEWS_SEQUENCE), 2):
-                        current_y_for_row_pdf = pdf.get_y(); max_h_this_row_pdf = 0
-                        for j_col in range(2):
-                            idx = i_row + j_col
-                            if idx < len(VIEWS_SEQUENCE):
-                                view_name_pdf = VIEWS_SEQUENCE[idx]; pil_image_pdf = st.session_state.all_landmark_images.get(view_name_pdf)
-                                if pil_image_pdf:
-                                    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
-                                        pil_image_pdf.save(tmp_file.name, format="JPEG")
-                                        image_paths_to_delete_pdf.append(tmp_file.name)
-                                        o_w, o_h = pil_image_pdf.size; asp = o_h/o_w if o_w > 0 else 1; img_h = img_display_width_pdf * asp
-                                        max_h_this_row_pdf = max(max_h_this_row_pdf, img_h)
-                                        if current_y_for_row_pdf + img_h + 10 > pdf.page_break_trigger: 
-                                            pdf.add_page()
-                                            current_y_for_row_pdf = pdf.get_y()
-                                        x_pos_img_pdf = row_start_x_pdf + j_col * (img_display_width_pdf + img_spacing_horizontal_pdf)
-                                        pdf.image(tmp_file.name, x=x_pos_img_pdf, y=current_y_for_row_pdf, w=img_display_width_pdf, h=img_h)
-                                        pdf.set_xy(x_pos_img_pdf, current_y_for_row_pdf + img_h + 1) 
-                                        pdf.multi_cell(img_display_width_pdf, 4, view_name_pdf, 0, 'C')
-                        if max_h_this_row_pdf > 0: pdf.set_y(current_y_for_row_pdf + max_h_this_row_pdf + 10)
-                finally:
-                    for path_del in image_paths_to_delete_pdf:
-                        if path_del and os.path.exists(path_del):
-                            try: os.unlink(path_del)
-                            except Exception as e_unlink: st.warning(f"Could not delete temp PDF image {path_del}: {e_unlink}")
-                pdf.ln(5)
-            elif st.session_state.analysis_mode == "Single View Analysis" and st.session_state.get("landmark_image"):
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
-                    pil_image_pdf_single = st.session_state.landmark_image
-                    pil_image_pdf_single.save(tmp_file.name, format="JPEG")
-                    page_width_pdf = pdf.w - pdf.l_margin - pdf.r_margin; max_image_height_pdf_val = 80
-                    original_w_px_pdf, original_h_px_pdf = pil_image_pdf_single.size; aspect_ratio_pdf = original_h_px_pdf / original_w_px_pdf if original_w_px_pdf > 0 else 1
-                    img_w_pdf_val = page_width_pdf * 0.70; img_h_pdf_val = img_w_pdf_val * aspect_ratio_pdf
-                    if img_h_pdf_val > max_image_height_pdf_val: img_h_pdf_val = max_image_height_pdf_val; img_w_pdf_val = img_h_pdf_val / aspect_ratio_pdf if aspect_ratio_pdf > 0 else max_image_height_pdf_val
-                    current_y_img_pdf = pdf.get_y()
-                    if current_y_img_pdf + img_h_pdf_val > pdf.page_break_trigger - 5: 
-                        pdf.add_page()
-                        current_y_img_pdf = pdf.get_y()
-                    img_x_pos_pdf = (pdf.w - img_w_pdf_val) / 2
-                    pdf.image(tmp_file.name, x=img_x_pos_pdf, y=current_y_img_pdf, w=img_w_pdf_val, h=img_h_pdf_val)
-                    pdf.set_y(current_y_img_pdf + img_h_pdf_val + 5)
-                if os.path.exists(tmp_file.name):
-                    os.unlink(tmp_file.name)
-                pdf.ln(3)
-
+            
             pdf.set_font("Arial", "B", 11); pdf.cell(0, 7, "Detected Postural Issues:", ln=1)
             pdf.set_font("Arial", "", 9); detected_cond_pdf = []
             if abn_pdf:
@@ -843,23 +734,6 @@ def main_app():
                     pdf.cell(0, 5, f"- {cond}: {'Present' if pres else 'Not Present'} {reason_str_pdf}", ln=1)
                     if pres: detected_cond_pdf.append(cond)
             else: pdf.cell(0,5, "- No abnormalities selected for detection or none found.", ln=1)
-            pdf.ln(2)
-            if detected_cond_pdf:
-                pdf.set_font("Arial", "B", 11); pdf.cell(0, 7, "General Recommendations (Standard):", ln=1)
-                pdf.set_font("Arial", "", 9); available_width_pdf = pdf.w - pdf.l_margin - pdf.r_margin - 10 
-                for cond in detected_cond_pdf:
-                    if cond in POSTURE_RECOMMENDATIONS:
-                        pdf.set_font("Arial", "B", 9); pdf.multi_cell(available_width_pdf, 5, f"For {cond}:")
-                        pdf.set_font("Arial", "", 9)
-                        for rec_item in POSTURE_RECOMMENDATIONS[cond]:
-                            clean_rec_item = rec_item.strip(); pdf.set_x(pdf.l_margin + 5); pdf.multi_cell(available_width_pdf - 5, 4, clean_rec_item) 
-                        pdf.ln(1)
-            
-            pdf.ln(2); disclaimer_height_estimate_pdf = 15
-            if pdf.get_y() + disclaimer_height_estimate_pdf > pdf.page_break_trigger -5: pdf.add_page()
-            pdf.set_font("Arial", "I", 7)
-            disclaimer_text_pdf = "Disclaimer: This automated analysis is for informational purposes only and not a substitute for professional medical advice. Accuracy may be affected by factors like image quality and clothing. Consult a healthcare provider for health concerns or before starting new exercises."
-            pdf.multi_cell(0, 3.5, disclaimer_text_pdf, align="C")
             
             pdf_output_data = pdf.output(dest='S')
             if isinstance(pdf_output_data, str): pdf_bytes_out = pdf_output_data.encode('latin-1')
