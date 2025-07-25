@@ -13,6 +13,7 @@ import gc
 import pyodbc
 import traceback
 import hashlib
+import time
 
 # --- Page Config ---
 st.set_page_config(
@@ -56,6 +57,18 @@ POSTURE_RECOMMENDATIONS = {
     "Bow Legs": ["- Consult with an orthopedic specialist", "- Strengthening exercises"]
 }
 
+ABNORMALITY_EXPLANATIONS = {
+    "Kyphosis": "Excessive outward curve of the upper back (hunchback).",
+    "Lordosis": "Excessive inward curve of the lower back (swayback).",
+    "Tech Neck": "Stress from looking down at screens for too long.",
+    "Scoliosis": "Sideways curvature of the spine.",
+    "Flat Feet": "Arches on the inside of the feet are flattened.",
+    "Gait Abnormalities": "An unusual walking pattern.",
+    "Knock Knees": "Knees angle inward and touch when legs are straight.",
+    "Bow Legs": "Legs curve outward at the knees."
+}
+
+
 # --- Session State Initialization ---
 def initialize_session_state():
     default_states = {
@@ -92,7 +105,7 @@ def get_db_connection():
         if any(not v for k, v in secrets_dict.items() if k != "DB_DRIVER"):
             return {"type": "error", "message": "Database secrets are missing."}
         db_driver = secrets_dict.get("DB_DRIVER") or "{ODBC Driver 17 for SQL Server}"
-        conn_str = f"DRIVER={db_driver};SERVER={secrets_dict['DB_SERVER']};DATABASE={secrets_dict['DB_NAME']};UID={secrets_dict['DB_UID']};PWD={secrets_dict['DB_PWD']};Encrypt=yes;TrustServerCertificate=no;ConnectionTimeout=30;"
+        conn_str = f"DRIVER={db_driver};SERVER={secrets_dict['DB_SERVER']};DATABASE={secrets_dict['DB_NAME']};UID={secrets_dict['DB_UID']};PWD={secrets_dict['DB_PWD']};Encrypt=yes;TrustServerCertificate=no;ConnectionTimeout=60;"
         return {"type": "success", "connection": pyodbc.connect(conn_str)}
     except Exception as e:
         return {"type": "error", "message": f"DB connection error: {e}"}
@@ -251,24 +264,46 @@ def login_screen():
             if submitted:
                 if not email or not password:
                     st.error("Please enter both email and password."); return
-                conn_details = get_db_connection()
-                if conn_details["type"] == "error":
-                    st.error(conn_details["message"]); return
-                conn = conn_details["connection"]
-                if not create_users_table_if_not_exists(conn):
-                     st.error("Failed to initialize user database."); conn.close(); return
-                user = get_user_by_email(conn, email)
-                if user and user["PasswordHash"] == hash_password(password):
-                    update_user_stats_on_login(conn, user["UserID"])
-                    st.session_state.logged_in = True
-                    st.session_state.user_info = user
-                    if user["IsFirstLogin"]:
-                        st.session_state.show_password_change = True
-                    conn.close()
-                    st.rerun()
-                else:
-                    st.error("Invalid email or password. Please contact your admin to reset the password.")
-                    conn.close()
+                
+                conn = None
+                max_retries = 3
+                retry_delay = 2
+                progress_bar = st.progress(0, text="Connecting to the secure server...")
+
+                for attempt in range(max_retries):
+                    conn_details = get_db_connection()
+                    if conn_details["type"] == "success":
+                        conn = conn_details["connection"]
+                        progress_bar.progress(100, text="Connection successful!")
+                        break
+                    else:
+                        if attempt < max_retries - 1:
+                            progress_bar.progress((attempt + 1) * (100 // max_retries), text="Secure connection is taking a bit longer, please wait...")
+                            time.sleep(retry_delay)
+                        else:
+                            progress_bar.empty()
+                            st.error("Could not establish a secure connection. Please try again later.")
+                            return
+
+                if conn:
+                    if not create_users_table_if_not_exists(conn):
+                        st.error("Failed to initialize user database.")
+                        conn.close()
+                        return
+                    
+                    user = get_user_by_email(conn, email)
+                    if user and user["PasswordHash"] == hash_password(password):
+                        update_user_stats_on_login(conn, user["UserID"])
+                        st.session_state.logged_in = True
+                        st.session_state.user_info = user
+                        if user["IsFirstLogin"]:
+                            st.session_state.show_password_change = True
+                        conn.close()
+                        st.rerun()
+                    else:
+                        st.error("Invalid email or password. Please contact your admin to reset the password.")
+                        conn.close()
+
 
 def password_change_screen(first_time=False):
     if first_time:
@@ -836,13 +871,24 @@ def main_app():
                 pdf.ln(3)
 
             pdf.set_font("Arial", "B", 11); pdf.cell(0, 7, "Detected Postural Issues:", ln=1)
-            pdf.set_font("Arial", "", 9); detected_cond_pdf = []
+            detected_cond_pdf = []
             if abn_pdf:
                 for cond, pres in abn_pdf.items():
                     reason_str_pdf = get_abnormality_reason_string(cond, data_pdf, st.session_state.thresholds) if pres else ""
-                    pdf.cell(0, 5, f"- {cond}: {'Present' if pres else 'Not Present'} {reason_str_pdf}", ln=1)
+                    explanation = ABNORMALITY_EXPLANATIONS.get(cond, "")
+                    
+                    pdf.set_font("Arial", "", 9)
+                    main_text = f"- {cond}: {'Present' if pres else 'Not Present'} {reason_str_pdf} "
+                    pdf.cell(pdf.get_string_width(main_text), 5, main_text, ln=0)
+                    
+                    pdf.set_font("Arial", "I", 9)
+                    remaining_width = pdf.w - pdf.l_margin - pdf.r_margin - pdf.get_x()
+                    pdf.multi_cell(remaining_width, 5, f"({explanation})", ln=1)
+
                     if pres: detected_cond_pdf.append(cond)
-            else: pdf.cell(0,5, "- No abnormalities selected for detection or none found.", ln=1)
+            else: 
+                pdf.set_font("Arial", "", 9)
+                pdf.cell(0,5, "- No abnormalities selected for detection or none found.", ln=1)
             pdf.ln(2)
             if detected_cond_pdf:
                 pdf.set_font("Arial", "B", 11); pdf.cell(0, 7, "General Recommendations (Standard):", ln=1)
@@ -909,22 +955,41 @@ def main_app():
     st.markdown("---"); st.subheader("☁️ Cloud Data Storage")
     if st.session_state.get('records'):
         if st.button("⬆️ Upload All Saved Records to Cloud", key="upload_to_azure_button"):
-            with st.spinner("Connecting to the cloud..."):
+            conn = None
+            max_retries = 3
+            retry_delay = 2
+            progress_bar = st.progress(0, text="Connecting to the cloud...")
+
+            for attempt in range(max_retries):
                 conn_details = get_db_connection()
-            if conn_details["type"] == "success":
-                st.success("Successfully connected to the database.")
-                conn = conn_details["connection"]
+                if conn_details["type"] == "success":
+                    conn = conn_details["connection"]
+                    progress_bar.progress(100, text="Connection successful! Uploading...")
+                    break
+                else:
+                    if attempt < max_retries - 1:
+                        progress_bar.progress((attempt + 1) * (100 // max_retries), text="Connection is taking a bit longer, please wait...")
+                        time.sleep(retry_delay)
+                    else:
+                        progress_bar.empty()
+                        st.error("Could not connect to the cloud. Please try again later.")
+                        return
+            
+            if conn:
                 with st.spinner("Uploading records..."):
                     upload_status = upload_records_to_sql(conn, st.session_state.records)
+                
                 if upload_status["type"] == "success":
                     st.success(upload_status["message"])
                     st.session_state.records = [] # Clear local records after successful upload
                 else:
                     st.error(upload_status["message"])
-                try: conn.close()
-                except pyodbc.Error: pass
-            else:
-                st.error(conn_details["message"])
+                
+                try: 
+                    conn.close()
+                except pyodbc.Error: 
+                    pass
+
 
     st.markdown(f"""<div class="copyright-footer">© Copyright {datetime.now().year} FutureNurture | <a href="http://www.futurenurture.in" target="_blank">www.futurenurture.in</a></div>""", unsafe_allow_html=True)
 
