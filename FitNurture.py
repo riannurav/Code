@@ -82,7 +82,7 @@ def initialize_session_state():
         'selected_abnormalities': {k: True for k in POSTURE_RECOMMENDATIONS.keys()},
         'captured_images_multi': {view: None for view in VIEWS_SEQUENCE},
         'camera_input_key_multi': "camera_multi_0", 'all_multi_images_uploaded': False,
-        'thresholds': DEFAULT_THRESHOLDS.copy(), 'scroll_to_top': False,
+        'thresholds': DEFAULT_THRESHOLDS.copy(), 'form_reset_counter': 0,
     }
     for view_key in [f"uploaded_image_{view.lower().replace(' ', '_')}" for view in VIEWS_SEQUENCE]:
         default_states[view_key] = None
@@ -388,9 +388,57 @@ def admin_panel():
 
 # --- Main Application Logic ---
 def main_app():
-    if st.session_state.scroll_to_top:
-        st.components.v1.html("<script>window.parent.document.body.scrollTop = 0; window.parent.document.documentElement.scrollTop = 0;</script>", height=0)
-        st.session_state.scroll_to_top = False
+    # Scroll to top when moving to next student (triggered by form_reset_counter increment)
+    if st.session_state.form_reset_counter > 0:
+        st.components.v1.html("""
+        <script>
+            function scrollToTop() {
+                // Scroll main window
+                window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+                window.scrollTo(0, 0);
+                
+                // Scroll parent window if in iframe
+                if (window.parent !== window) {
+                    window.parent.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+                    window.parent.scrollTo(0, 0);
+                    // Try to scroll parent document elements
+                    try {
+                        window.parent.document.documentElement.scrollTop = 0;
+                        window.parent.document.body.scrollTop = 0;
+                    } catch(e) {}
+                }
+                
+                // Scroll document elements
+                document.documentElement.scrollTop = 0;
+                document.body.scrollTop = 0;
+                
+                // Scroll Streamlit app container
+                var stApp = document.querySelector('.stApp');
+                if (stApp) {
+                    stApp.scrollTop = 0;
+                    stApp.scrollTo(0, 0);
+                }
+                
+                // Scroll main container
+                var main = document.querySelector('main');
+                if (main) {
+                    main.scrollTop = 0;
+                    main.scrollTo(0, 0);
+                }
+            }
+            
+            // Execute immediately
+            scrollToTop();
+            
+            // Also execute after a short delay to ensure it happens after render
+            setTimeout(scrollToTop, 0);
+            setTimeout(scrollToTop, 10);
+            setTimeout(scrollToTop, 50);
+            
+            // Use requestAnimationFrame for next paint
+            requestAnimationFrame(scrollToTop);
+        </script>
+        """, height=0)
 
     with st.sidebar:
         st.subheader(f"Welcome, {st.session_state.user_info['FullName']}")
@@ -425,7 +473,8 @@ def main_app():
         st.session_state.selected_age_group = AGE_GROUPS[0]
         st.session_state.selected_gender = GENDERS[0]
         st.session_state.loose_clothing = False
-        st.session_state.scroll_to_top = True
+        # Increment form reset counter to force recreation of form inputs
+        st.session_state.form_reset_counter += 1
 
     def optimize_image(image, max_size=800):
         if isinstance(image, np.ndarray): img = Image.fromarray(image)
@@ -615,7 +664,7 @@ def main_app():
 
     st.session_state.school_name = st.text_input("Enter School Name (for this session):", value=st.session_state.get('school_name', ''), key="school_name_input")
     st.markdown("---")
-    child_name = st.text_input("Enter Child's Name (Mandatory):", key="child_name_input", value=st.session_state.get('current_entry',{}).get('Student Name',''))
+    child_name = st.text_input("Enter Child's Name (Mandatory):", key=f"child_name_input_{st.session_state.form_reset_counter}", value="")
     if child_name:
         st.session_state.selected_age_group = st.selectbox("Select Age Group:", options=AGE_GROUPS, key="age_group_select", index=AGE_GROUPS.index(st.session_state.selected_age_group))
         st.session_state.selected_gender = st.radio("Select Gender:", options=GENDERS, key="gender_radio", index=GENDERS.index(st.session_state.selected_gender), horizontal=True)
