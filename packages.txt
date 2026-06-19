@@ -1,3 +1,4 @@
 libgl1
 msodbcsql17
 unixodbc-dev
+libgl1-mesa-glx
